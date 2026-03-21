@@ -3,6 +3,7 @@ import { HTMLRewriter } from "@sntran/html-rewriter";
 export const EMPTY_STRING = "";
 export const STATE_EMIT = "EMIT";
 export const STATE_SKIP = "SKIP";
+export const STATE_CAPTURE = "CAPTURE";
 
 export const FILTERS = {
   upcase(value) {
@@ -66,12 +67,20 @@ export class Liquid {
     this.HTMLRewriterClass = options.HTMLRewriterClass || HTMLRewriter;
   }
 
+  createScope(parent = null) {
+    return Object.create(parent);
+  }
+
   createState(context = {}) {
+    const scope = this.createScope(null);
+    Object.assign(scope, context);
+
     return {
       state: STATE_EMIT,
-      context: { ...context },
+      context: scope,
       ifStack: [],
       textBuffer: [],
+      capture: null,
     };
   }
 
@@ -176,6 +185,18 @@ export class Liquid {
         continue;
       }
 
+      if (tag.startsWith("for ")) {
+        const match = /^for\s+(\w+)\s+in\s+(.+)$/.exec(tag);
+        state.capture = {
+          mode: "for",
+          variable: match[1],
+          collection: this.resolveExpression(match[2], state.context),
+          parts: [],
+        };
+        state.state = STATE_CAPTURE;
+        continue;
+      }
+
       if (tag === "endif") {
         state.ifStack.pop();
         state.state = state.ifStack.at(-1) === false ? STATE_SKIP : STATE_EMIT;
@@ -212,9 +233,46 @@ export class Liquid {
     return EMPTY_STRING;
   }
 
+  async processCaptureText(text, state) {
+    const endTag = state.capture.mode === "for" ? "{% endfor %}" : "{% endcapture %}";
+    const endIndex = text.indexOf(endTag);
+
+    if (endIndex === -1) {
+      state.capture.parts.push(text);
+      return EMPTY_STRING;
+    }
+
+    state.capture.parts.push(text.slice(0, endIndex));
+    const rendered = await this.renderCapture(state);
+    state.capture = null;
+    state.state = STATE_EMIT;
+
+    return rendered + this.processText(text.slice(endIndex + endTag.length), state);
+  }
+
+  async renderCapture(state) {
+    const template = state.capture.parts.join(EMPTY_STRING);
+    const collection = Array.isArray(state.capture.collection)
+      ? state.capture.collection
+      : [];
+    const output = [];
+
+    for (const item of collection) {
+      const scope = this.createScope(state.context);
+      scope[state.capture.variable] = item;
+      output.push(await this.renderFragment(template, scope));
+    }
+
+    return output.join(EMPTY_STRING);
+  }
+
   processText(text, state) {
     if (state.state === STATE_SKIP) {
       return this.processSkipText(text, state);
+    }
+
+    if (state.state === STATE_CAPTURE) {
+      return this.processCaptureText(text, state);
     }
 
     return this.processEmitText(text, state);
@@ -222,7 +280,7 @@ export class Liquid {
 
   createHandler(state) {
     return {
-      text: (textNode) => {
+      text: async (textNode) => {
         state.textBuffer.push(textNode.text);
 
         if (!textNode.lastInTextNode) {
@@ -232,9 +290,13 @@ export class Liquid {
 
         const nextText = state.textBuffer.join(EMPTY_STRING);
         state.textBuffer.length = 0;
-        textNode.replace(this.processText(nextText, state));
+        textNode.replace(await this.processText(nextText, state));
       },
     };
+  }
+
+  async renderFragment(template, context = {}) {
+    return this.parseAndRender(template, context);
   }
 
   async parseAndRender(template, context = {}) {

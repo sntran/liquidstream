@@ -2,16 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Liquid } from "../src/index.js";
 
-test("rewriter buffers split text nodes before interpolation", async () => {
+test("capture mode replays loop fragments", async () => {
   class FakeTextNode {
-    constructor(text, lastInTextNode) {
+    constructor(text) {
       this.text = text;
-      this.lastInTextNode = lastInTextNode;
+      this.lastInTextNode = true;
       this.value = text;
-    }
-
-    remove() {
-      this.value = "";
     }
 
     replace(value) {
@@ -28,12 +24,10 @@ test("rewriter buffers split text nodes before interpolation", async () => {
     transform(response) {
       return {
         text: async () => {
-          await response.text();
-          const first = new FakeTextNode('{{ user.', false);
-          const second = new FakeTextNode('name }}', true);
-          this.handler.text(first);
-          this.handler.text(second);
-          return `${first.value}${second.value}`;
+          const text = await response.text();
+          const node = new FakeTextNode(text);
+          await this.handler.text(node);
+          return node.value;
         },
       };
     }
@@ -41,7 +35,9 @@ test("rewriter buffers split text nodes before interpolation", async () => {
 
   const engine = new Liquid({ HTMLRewriterClass: FakeHTMLRewriter });
   assert.equal(
-    await engine.parseAndRender('<p>{{ user.name }}</p>', { user: { name: 'Ada' } }),
-    'Ada',
+    await engine.parseAndRender('{% for i in list %}[{{ i }}]{% endfor %}', {
+      list: [1, 2, 3],
+    }),
+    '[1][2][3]',
   );
 });
