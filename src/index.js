@@ -1,5 +1,14 @@
 export const EMPTY_STRING = "";
 
+export const FILTERS = {
+  upcase(value) {
+    return String(value ?? EMPTY_STRING).toUpperCase();
+  },
+  downcase(value) {
+    return String(value ?? EMPTY_STRING).toLowerCase();
+  },
+};
+
 export function splitTopLevel(expression = EMPTY_STRING, separator = ".") {
   const parts = [];
   let current = EMPTY_STRING;
@@ -39,7 +48,19 @@ export function resolvePathValue(value, segment) {
   return value?.[segment];
 }
 
+export function escapeHtml(value) {
+  return String(value ?? EMPTY_STRING)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
 export class Liquid {
+  constructor() {
+    this.filters = { ...FILTERS };
+  }
+
   resolveExpression(expression, context = {}) {
     const source = String(expression ?? EMPTY_STRING).trim();
 
@@ -76,5 +97,26 @@ export class Liquid {
   resolveValue(expression, context = {}) {
     const value = this.resolveExpression(expression, context);
     return value === undefined || value === null ? EMPTY_STRING : value;
+  }
+
+  interpolate(template, context = {}) {
+    return String(template).replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_match, source) => {
+      const parts = splitTopLevel(source, "|");
+      const expression = parts.shift();
+      let value = this.resolveValue(expression, context);
+
+      for (const filterName of parts) {
+        const filter = this.filters[filterName.trim()];
+        if (typeof filter === "function") {
+          value = filter(value);
+        }
+      }
+
+      return escapeHtml(value);
+    });
+  }
+
+  async parseAndRender(template, context = {}) {
+    return this.interpolate(template, context);
   }
 }

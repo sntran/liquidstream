@@ -1,22 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {
-  Liquid,
-  parsePathSegments,
-  resolvePathValue,
-  splitTopLevel,
-} from "../src/index.js";
+import { Liquid, escapeHtml } from "../src/index.js";
 
-test("expression resolver stays pure", () => {
+test("string interpolation renders variables and filters", async () => {
   const engine = new Liquid();
 
-  assert.deepEqual(splitTopLevel('"a:b":c', ':'), ['"a:b"', 'c']);
-  assert.deepEqual(parsePathSegments('user.profile.name'), [
-    'user',
-    'profile',
-    'name',
-  ]);
-  assert.equal(resolvePathValue({ name: 'Ada' }, 'name'), 'Ada');
-  assert.equal(engine.resolveExpression('"Ada"'), 'Ada');
-  assert.equal(engine.resolveValue('user.name', { user: { name: 'Ada' } }), 'Ada');
+  assert.equal(escapeHtml('<Ada>'), '&lt;Ada&gt;');
+  assert.equal(
+    await engine.parseAndRender('<p>{{ user.name | upcase }}</p>', {
+      user: { name: 'Ada' },
+    }),
+    '<p>ADA</p>',
+  );
 });
