@@ -1,4 +1,4 @@
 # @sntran/liquid-html-rewriter
 
-This checkpoint adds capture mode so buffered fragments can be replayed
-for loops and capture blocks.
+This checkpoint moves the default filters into a shared prototype-backed
+library and adds runtime registration.

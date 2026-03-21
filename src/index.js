@@ -12,6 +12,11 @@ export const FILTERS = {
   downcase(value) {
     return String(value ?? EMPTY_STRING).toLowerCase();
   },
+  default(value, fallback = EMPTY_STRING) {
+    return value === undefined || value === null || value === EMPTY_STRING
+      ? fallback
+      : value;
+  },
 };
 
 export function splitTopLevel(expression = EMPTY_STRING, separator = ".") {
@@ -63,8 +68,12 @@ export function escapeHtml(value) {
 
 export class Liquid {
   constructor(options = {}) {
-    this.filters = { ...FILTERS };
+    this.filters = Object.assign(Object.create(FILTERS), options.filters || {});
     this.HTMLRewriterClass = options.HTMLRewriterClass || HTMLRewriter;
+  }
+
+  registerFilter(name, filter) {
+    this.filters[name] = filter;
   }
 
   createScope(parent = null) {
@@ -132,10 +141,12 @@ export class Liquid {
       const expression = parts.shift();
       let value = this.resolveValue(expression, context);
 
-      for (const filterName of parts) {
+      for (const step of parts) {
+        const [filterName, argument] = splitTopLevel(step, ":");
         const filter = this.filters[filterName.trim()];
+
         if (typeof filter === "function") {
-          value = filter(value);
+          value = filter(value, this.resolveValue(argument, context));
         }
       }
 

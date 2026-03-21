@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Liquid } from "../src/index.js";
 
-test("capture mode replays loop fragments", async () => {
+test("shared filters can be extended per instance", async () => {
   class FakeTextNode {
     constructor(text) {
       this.text = text;
@@ -24,8 +24,7 @@ test("capture mode replays loop fragments", async () => {
     transform(response) {
       return {
         text: async () => {
-          const text = await response.text();
-          const node = new FakeTextNode(text);
+          const node = new FakeTextNode(await response.text());
           await this.handler.text(node);
           return node.value;
         },
@@ -34,10 +33,16 @@ test("capture mode replays loop fragments", async () => {
   }
 
   const engine = new Liquid({ HTMLRewriterClass: FakeHTMLRewriter });
+  engine.registerFilter('surround', (value) => `[${value}]`);
+
   assert.equal(
-    await engine.parseAndRender('{% for i in list %}[{{ i }}]{% endfor %}', {
-      list: [1, 2, 3],
+    await engine.parseAndRender('{{ word | downcase | capitalize | default: "x" }}', {
+      word: 'HELLO',
     }),
-    '[1][2][3]',
+    'hello',
+  );
+  assert.equal(
+    await engine.parseAndRender('{{ word | surround }}', { word: 'Ada' }),
+    '[Ada]',
   );
 });
