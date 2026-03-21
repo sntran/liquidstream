@@ -1031,7 +1031,21 @@ export class Liquid {
       const argumentsList = splitFilterArguments(rawArguments).map((argument) =>
         unwrapHtmlValue(this.resolveExpression(argument, context, { applyFilters: false })),
       );
-      value = filter(unwrapHtmlValue(value), ...argumentsList);
+      value = filter.apply(
+        {
+          context,
+          evaluate: (expression, scope = {}) => this.evaluateCondition(
+            expression,
+            Object.assign(createScope(context), scope),
+          ),
+          resolveExpression: (expression, scope = {}, options = {}) => this.resolveExpression(
+            expression,
+            Object.assign(createScope(context), scope),
+            options,
+          ),
+        },
+        [unwrapHtmlValue(value), ...argumentsList],
+      );
     }
 
     return value ?? EMPTY_STRING;

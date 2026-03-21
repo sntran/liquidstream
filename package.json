@@ -5,10 +5,8 @@
   "type": "module",
   "main": "./src/index.js",
   "exports": {
-    ".": {
-      "import": "./src/index.js",
-      "default": "./src/index.js"
-    }
+    ".": "./src/index.js",
+    "./jekyll": "./src/plugins/jekyll.js"
   },
   "files": [
     "src",

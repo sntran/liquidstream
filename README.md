@@ -187,6 +187,8 @@ Built-in filters include:
 - `url_encode`
 - `url_decode`
 
+An optional Jekyll-oriented filter pack is also available from `@sntran/liquidstream/jekyll`.
+
 ## API
 
 ### `new Liquid(options?)`
@@ -210,6 +212,12 @@ Renders a template string with the provided context.
 ### `registerFilter(name, filter)`
 
 Adds or overrides an instance-local filter.
+
+Filter functions run with a small engine-aware `this` binding:
+
+- `this.context`: the current render scope
+- `this.evaluate(expression, scope?)`: evaluate a Liquid condition against the current scope plus optional overrides
+- `this.resolveExpression(expression, scope?, options?)`: resolve a Liquid expression against the current scope plus optional overrides
 
 ### `registerTag(name, handler)`
 
@@ -250,6 +258,53 @@ engine.registerFilter("surround", (value, left = "[", right = "]") => {
 console.log(await engine.parseAndRender('{{ "hello" | surround: "(", ")" }}', {}));
 // (hello)
 ```
+
+Filters can access the current context and delegate condition or expression work back to the engine:
+
+```js
+engine.registerFilter("only_matching", function (items, variableName, expression) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+
+  return items.filter((item) => this.evaluate(expression, { [variableName]: item }));
+});
+```
+
+## Jekyll Filters
+
+If you want Jekyll-style helpers without baking them into the core engine, import the optional plugin:
+
+```js
+import { Liquid } from "@sntran/liquidstream";
+import jekyllFilters from "@sntran/liquidstream/jekyll";
+
+const engine = new Liquid({
+  filters: jekyllFilters,
+});
+
+const html = await engine.parseAndRender(
+  '{{ posts | where_exp: "post", "post.category == page.category" | size }}',
+  {
+    page: { category: "guides" },
+    posts: [
+      { category: "guides" },
+      { category: "news" },
+    ],
+  },
+);
+```
+
+The Jekyll plugin currently provides:
+
+- `jsonify`
+- `slugify`
+- `where`
+- `where_exp`
+- `relative_url`
+- `absolute_url`
+- `group_by`
+- `group_by_exp`
 
 ## Custom Tags
 
