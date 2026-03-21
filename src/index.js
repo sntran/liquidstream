@@ -38,3 +38,43 @@ export function resolvePathValue(value, segment) {
 
   return value?.[segment];
 }
+
+export class Liquid {
+  resolveExpression(expression, context = {}) {
+    const source = String(expression ?? EMPTY_STRING).trim();
+
+    if (!source) {
+      return EMPTY_STRING;
+    }
+
+    if (
+      (source.startsWith('"') && source.endsWith('"')) ||
+      (source.startsWith("'") && source.endsWith("'"))
+    ) {
+      return source.slice(1, -1);
+    }
+
+    if (/^-?\d+(?:\.\d+)?$/.test(source)) {
+      return Number(source);
+    }
+
+    if (source === "true") {
+      return true;
+    }
+
+    if (source === "false") {
+      return false;
+    }
+
+    if (source === "null" || source === "nil") {
+      return null;
+    }
+
+    return parsePathSegments(source).reduce(resolvePathValue, context);
+  }
+
+  resolveValue(expression, context = {}) {
+    const value = this.resolveExpression(expression, context);
+    return value === undefined || value === null ? EMPTY_STRING : value;
+  }
+}
