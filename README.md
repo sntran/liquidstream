@@ -1,4 +1,4 @@
 # @sntran/liquid-html-rewriter
 
-This checkpoint introduces the first emit and skip states so block logic
-can control which text is rendered.
+This checkpoint moves text processing into HTMLRewriter handlers so
+rendering can follow stream chunks.

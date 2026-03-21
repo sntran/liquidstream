@@ -8,5 +8,8 @@
   },
   "scripts": {
     "test": "node --test test/checkpoint.test.js"
+  },
+  "dependencies": {
+    "@sntran/html-rewriter": "^0.0.9"
   }
 }

@@ -1,3 +1,5 @@
+import { HTMLRewriter } from "@sntran/html-rewriter";
+
 export const EMPTY_STRING = "";
 export const STATE_EMIT = "EMIT";
 export const STATE_SKIP = "SKIP";
@@ -59,8 +61,9 @@ export function escapeHtml(value) {
 }
 
 export class Liquid {
-  constructor() {
+  constructor(options = {}) {
     this.filters = { ...FILTERS };
+    this.HTMLRewriterClass = options.HTMLRewriterClass || HTMLRewriter;
   }
 
   createState(context = {}) {
@@ -68,6 +71,7 @@ export class Liquid {
       state: STATE_EMIT,
       context: { ...context },
       ifStack: [],
+      textBuffer: [],
     };
   }
 
@@ -216,7 +220,30 @@ export class Liquid {
     return this.processEmitText(text, state);
   }
 
+  createHandler(state) {
+    return {
+      text: (textNode) => {
+        state.textBuffer.push(textNode.text);
+
+        if (!textNode.lastInTextNode) {
+          textNode.remove();
+          return;
+        }
+
+        const nextText = state.textBuffer.join(EMPTY_STRING);
+        state.textBuffer.length = 0;
+        textNode.replace(this.processText(nextText, state));
+      },
+    };
+  }
+
   async parseAndRender(template, context = {}) {
-    return this.processText(String(template), this.createState(context));
+    const state = this.createState(context);
+    const response = new Response(String(template));
+    const rewritten = new this.HTMLRewriterClass()
+      .on("*", this.createHandler(state))
+      .transform(response);
+
+    return rewritten.text();
   }
 }
