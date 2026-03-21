@@ -5,10 +5,6 @@ const STATE_SKIP = "SKIP";
 const STATE_CAPTURE = "CAPTURE";
 const STATE_RAW = "RAW";
 
-const FOR_PATTERN = /^for\s+(\w+)\s+in\s+(.+)$/;
-const ASSIGN_PATTERN = /^assign\s+(\w+)\s*=\s*(.+)$/;
-const CAPTURE_PATTERN = /^capture\s+(\w+)$/;
-const INCREMENT_PATTERN = /^(increment|decrement)\s+(\w+)$/;
 const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const NUMBER_PATTERN = /^-?\d+(?:\.\d+)?$/;
 const RANGE_PATTERN = /^\((.+)\.\.(.+)\)$/;
@@ -17,9 +13,17 @@ const VARIABLE_CLOSE = "}}";
 const BLOCK_OPEN = "{%";
 const BLOCK_CLOSE = "%}";
 const EMPTY_STRING = "";
-const HTML_VALUE = Symbol("liquidHtmlValue");
+const HTML_VALUE = "_h";
 const WHITESPACE_CHARACTERS = new Set([" ", "\n", "\r", "\t", "\f"]);
 const COMPARISON_OPERATORS = [">=", "<=", "!=", "==", ">", "<"];
+const DATE_TOKENS = /%[YmdHMSbBaA]/g;
+const DATE_FORMATTERS = {
+  "%b": new Intl.DateTimeFormat("en-US", { month: "short", timeZone: "UTC" }),
+  "%B": new Intl.DateTimeFormat("en-US", { month: "long", timeZone: "UTC" }),
+  "%a": new Intl.DateTimeFormat("en-US", { weekday: "short", timeZone: "UTC" }),
+  "%A": new Intl.DateTimeFormat("en-US", { weekday: "long", timeZone: "UTC" }),
+};
+const NAME_PATTERN = /^\w+$/;
 
 function escapeHtml(value = EMPTY_STRING) {
   return value
@@ -38,7 +42,7 @@ function escapeAttribute(value = EMPTY_STRING) {
 
 function createHtmlValue(value = EMPTY_STRING) {
   return {
-    [HTML_VALUE]: true,
+    [HTML_VALUE]: 1,
     value: String(value),
   };
 }
@@ -52,8 +56,8 @@ function createScope(parent = null) {
 }
 
 function parseForExpression(expression = EMPTY_STRING) {
-  const tokens = splitTopLevel(expression, " ").filter(Boolean);
-  if (tokens.length < 4 || tokens[0] !== "for" || tokens[2] !== "in") {
+  const tokens = tokenize(expression, " ").filter(Boolean);
+  if (tokens.length < 4 || tokens[0] !== "for" || tokens[2] !== "in" || !NAME_PATTERN.test(tokens[1])) {
     return null;
   }
 
@@ -93,37 +97,43 @@ function parseForExpression(expression = EMPTY_STRING) {
 }
 
 function parseAssignExpression(expression = EMPTY_STRING) {
-  const match = ASSIGN_PATTERN.exec(expression);
-  if (!match) {
+  const [left, ...rest] = tokenize(expression, "=");
+  const valueExpression = rest.join("=").trim();
+  const tokens = tokenize(left || EMPTY_STRING, " ").filter(Boolean);
+  if (tokens[0] !== "assign" || tokens.length !== 2 || !valueExpression || !NAME_PATTERN.test(tokens[1])) {
     return null;
   }
 
   return {
-    variableName: match[1],
-    valueExpression: match[2].trim(),
+    variableName: tokens[1],
+    valueExpression,
   };
 }
 
 function parseCaptureExpression(expression = EMPTY_STRING) {
-  const match = CAPTURE_PATTERN.exec(expression);
-  if (!match) {
+  const tokens = tokenize(expression, " ").filter(Boolean);
+  if (tokens[0] !== "capture" || tokens.length !== 2 || !NAME_PATTERN.test(tokens[1])) {
     return null;
   }
 
   return {
-    variableName: match[1],
+    variableName: tokens[1],
   };
 }
 
 function parseCounterExpression(expression = EMPTY_STRING) {
-  const match = INCREMENT_PATTERN.exec(expression);
-  if (!match) {
+  const tokens = tokenize(expression, " ").filter(Boolean);
+  if (
+    tokens.length !== 2 ||
+    (tokens[0] !== "increment" && tokens[0] !== "decrement") ||
+    !NAME_PATTERN.test(tokens[1])
+  ) {
     return null;
   }
 
   return {
-    operation: match[1],
-    variableName: match[2],
+    operation: tokens[0],
+    variableName: tokens[1],
   };
 }
 
@@ -140,7 +150,7 @@ function parseNamedArgument(expression = EMPTY_STRING) {
 }
 
 function parsePartialExpression(expression = EMPTY_STRING) {
-  const segments = splitTopLevel(expression, ",").filter(Boolean);
+  const segments = tokenize(expression, ",").filter(Boolean);
   if (segments.length === 0) {
     return {
       snippetExpression: EMPTY_STRING,
@@ -209,8 +219,18 @@ function serializeEndTag(tagName) {
   return `</${tagName}>`;
 }
 
-function updateScanState(state, char) {
-  if ((char === '"' || char === "'") && (!state.quote || state.quote === char)) {
+function isEscaped(text, index) {
+  let slashCount = 0;
+  for (let cursor = index - 1; cursor >= 0 && text[cursor] === "\\"; cursor -= 1) {
+    slashCount += 1;
+  }
+  return slashCount % 2 === 1;
+}
+
+function updateScanState(state, text, index) {
+  const char = text[index];
+
+  if ((char === '"' || char === "'") && !isEscaped(text, index) && (!state.quote || state.quote === char)) {
     state.quote = state.quote === char ? null : char;
     return;
   }
@@ -238,7 +258,7 @@ function isTopLevel(state) {
   return !state.quote && state.parenDepth === 0 && state.squareDepth === 0 && state.curlyDepth === 0;
 }
 
-function splitTopLevel(expression = EMPTY_STRING, separator) {
+function tokenize(expression = EMPTY_STRING, separator) {
   const parts = [];
   let current = EMPTY_STRING;
   const state = {
@@ -259,36 +279,7 @@ function splitTopLevel(expression = EMPTY_STRING, separator) {
     }
 
     current += char;
-    updateScanState(state, char);
-  }
-
-  parts.push(current.trim());
-  return parts;
-}
-
-function splitTopLevelKeyword(expression = EMPTY_STRING, keyword) {
-  const parts = [];
-  let current = EMPTY_STRING;
-  const state = {
-    quote: null,
-    parenDepth: 0,
-    squareDepth: 0,
-    curlyDepth: 0,
-  };
-  const pattern = ` ${keyword} `;
-
-  for (let index = 0; index < expression.length; index += 1) {
-    const char = expression[index];
-
-    if (isTopLevel(state) && expression.startsWith(pattern, index)) {
-      parts.push(current.trim());
-      current = EMPTY_STRING;
-      index += pattern.length - 1;
-      continue;
-    }
-
-    current += char;
-    updateScanState(state, char);
+    updateScanState(state, expression, index);
   }
 
   parts.push(current.trim());
@@ -310,18 +301,18 @@ function findTopLevelOperator(expression = EMPTY_STRING, operator) {
       return index;
     }
 
-    updateScanState(state, char);
+    updateScanState(state, expression, index);
   }
 
   return -1;
 }
 
 function splitFilterSegments(expression = EMPTY_STRING) {
-  return splitTopLevel(expression, "|");
+  return tokenize(expression, "|");
 }
 
 function splitFilterArguments(expression = EMPTY_STRING) {
-  return splitTopLevel(expression, ",").filter(Boolean);
+  return tokenize(expression, ",").filter(Boolean);
 }
 
 function splitFilterNameAndArguments(expression = EMPTY_STRING) {
@@ -330,7 +321,7 @@ function splitFilterNameAndArguments(expression = EMPTY_STRING) {
   for (let index = 0; index < expression.length; index += 1) {
     const char = expression[index];
 
-    if ((char === '"' || char === "'") && (!quote || quote === char)) {
+    if ((char === '"' || char === "'") && !isEscaped(expression, index) && (!quote || quote === char)) {
       quote = quote === char ? null : char;
       continue;
     }
@@ -399,32 +390,25 @@ function formatDate(value, format = "%Y-%m-%d") {
     return EMPTY_STRING;
   }
 
-  const shortMonths = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-  ];
-  const longMonths = [
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December",
-  ];
   const pad = (number) => String(number).padStart(2, "0");
-  const replacements = {
-    "%Y": String(date.getUTCFullYear()),
-    "%m": pad(date.getUTCMonth() + 1),
-    "%d": pad(date.getUTCDate()),
-    "%H": pad(date.getUTCHours()),
-    "%M": pad(date.getUTCMinutes()),
-    "%S": pad(date.getUTCSeconds()),
-    "%b": shortMonths[date.getUTCMonth()],
-    "%B": longMonths[date.getUTCMonth()],
-  };
-
-  let result = String(format);
-  for (const [token, replacement] of Object.entries(replacements)) {
-    result = result.replaceAll(token, replacement);
-  }
-
-  return result;
+  return String(format).replace(DATE_TOKENS, (token) => {
+    switch (token) {
+      case "%Y":
+        return String(date.getUTCFullYear());
+      case "%m":
+        return pad(date.getUTCMonth() + 1);
+      case "%d":
+        return pad(date.getUTCDate());
+      case "%H":
+        return pad(date.getUTCHours());
+      case "%M":
+        return pad(date.getUTCMinutes());
+      case "%S":
+        return pad(date.getUTCSeconds());
+      default:
+        return DATE_FORMATTERS[token]?.format(date) || token;
+    }
+  });
 }
 
 function skipLeadingWhitespace(text, index) {
@@ -644,8 +628,8 @@ function createLoopMetadata(index, length) {
 }
 
 function evaluateWhenMatch(engine, expression, switchValue, context) {
-  const candidates = splitTopLevel(expression, ",")
-    .flatMap((segment) => splitTopLevel(segment, " "))
+  const candidates = tokenize(expression, ",")
+    .flatMap((segment) => tokenize(segment, " "))
     .filter((segment) => segment && segment !== "or");
 
   return candidates.some((candidate) => engine.resolveValue(candidate, context) === switchValue);
@@ -780,13 +764,9 @@ export class Liquid {
     this.autoEscape = autoEscape;
     this.fetch = fetch || globalThis.fetch;
     this.filters = Object.assign(Object.create(FILTERS), filters);
-    this.tags = new Map();
+    this.tags = Object.assign(Object.create(null), tags);
     this.yieldAfter = yieldAfter;
     this.yieldControl = yieldControl || defaultYieldControl;
-
-    for (const [name, tag] of Object.entries(tags)) {
-      this.registerTag(name, tag);
-    }
   }
 
   registerFilter(name, filter) {
@@ -794,7 +774,7 @@ export class Liquid {
   }
 
   registerTag(name, handler) {
-    this.tags.set(name, handler);
+    this.tags[name] = handler;
   }
 
   createHandler(context = {}) {
@@ -945,7 +925,7 @@ export class Liquid {
         return [];
       }
 
-      return splitTopLevel(inner, ",").filter(Boolean).map((item) =>
+      return tokenize(inner, ",").filter(Boolean).map((item) =>
         this.resolveExpression(item, context, { applyFilters: false }),
       );
     }
@@ -957,7 +937,7 @@ export class Liquid {
       }
 
       const output = {};
-      for (const entry of splitTopLevel(inner, ",").filter(Boolean)) {
+      for (const entry of tokenize(inner, ",").filter(Boolean)) {
         const [rawKey, rawValue] = splitFilterNameAndArguments(entry);
         if (!rawKey || !rawValue) {
           continue;
@@ -1013,6 +993,10 @@ export class Liquid {
         (normalizedExpression.startsWith("'") && normalizedExpression.endsWith("'"))
       ) {
         return normalizedExpression.slice(1, -1);
+      }
+
+      if (normalizedExpression.startsWith('"') || normalizedExpression.startsWith("'")) {
+        return normalizedExpression.slice(1);
       }
 
       if (normalizedExpression === "true") {
@@ -1090,12 +1074,12 @@ export class Liquid {
   }
 
   evaluateCondition(condition, context = {}) {
-    const orParts = splitTopLevelKeyword(condition.trim(), "or");
+    const orParts = tokenize(condition.trim(), " or ");
     if (orParts.length > 1) {
       return orParts.some((part) => this.evaluateCondition(part, context));
     }
 
-    const andParts = splitTopLevelKeyword(condition.trim(), "and");
+    const andParts = tokenize(condition.trim(), " and ");
     if (andParts.length > 1) {
       return andParts.every((part) => this.evaluateCondition(part, context));
     }
@@ -1384,7 +1368,7 @@ export class Liquid {
       }
 
       const { name, expression } = parseTagInvocation(block.content);
-      const customTag = this.tags.get(name);
+      const customTag = this.tags[name];
       if (customTag) {
         const tagResult = await customTag({
           context: handler.currentContext,
@@ -1638,7 +1622,8 @@ export class Liquid {
 export const __private__ = {
   isLiquidTruthy,
   resolvePathValue,
-  splitTopLevel,
+  splitTopLevel: tokenize,
+  tokenize,
 };
 
 export default Liquid;
