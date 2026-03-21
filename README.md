@@ -1,30 +1,138 @@
-# `@sntran/liquid-html-rewriter`
+# `@sntran/liquidstream`
 
-`@sntran/liquid-html-rewriter` is a small Liquid-compatible renderer built on top of `HTMLRewriter`.
+`@sntran/liquidstream` is a streaming-first Liquid renderer for Cloudflare Workers, edge runtimes, and Node.js.
 
-It is designed for environments where:
+It keeps the public `Liquid` class so existing `liquidjs`-style code stays familiar, but the engine is built around `HTMLRewriter` instead of a full AST compiler. That means it can start emitting HTML while the document is still being processed, which is especially valuable in Worker environments where time to first byte matters.
 
-- streaming matters
-- bundle size matters
-- `eval()` and `new Function()` are not allowed
-- you only need a practical, well-defined subset of Liquid rather than the full Shopify/Jekyll surface area
+## Why `liquidstream`
 
-This package powers the Liquid rendering path used by `sntran.com`, especially for Cloudflare Worker rendering and Explorer tree generation.
+Most Liquid engines optimize for broad compatibility and full template-platform features. `liquidstream` optimizes for a different goal:
 
-## Why This Exists
+- stream HTML early instead of waiting for the whole template to finish
+- stay safe in Worker runtimes with no `eval()` or `new Function()`
+- keep the implementation compact and inspectable
+- preserve a familiar `Liquid` API for most day-to-day template work
 
-Traditional Liquid engines are excellent general-purpose tools, but they usually optimize for broad compatibility over Worker-specific constraints. This package takes a different approach:
+If you want a Worker-native renderer that behaves like Liquid without hauling in a large parser stack, this is the fit.
 
-- it uses `HTMLRewriter` as the primary rendering engine
-- it keeps scope creation cheap via `Object.create(...)`
-- it avoids dynamic code generation entirely
-- it favors a compact, inspectable implementation over a giant parser/runtime stack
+## Streaming Value Proposition
 
-In practice, that makes it a good fit for Worker-style deployments, edge rendering experiments, and HTML-centric templates that benefit from streaming behavior.
+`liquidstream` uses `HTMLRewriter` as the rendering bridge. It buffers split text chunks only until `lastInTextNode`, then immediately evaluates Liquid tags through a small state machine.
 
-## What It Supports
+That gives it a practical advantage over string-only engines: it can start sending the response before the entire template is fully rendered.
 
-The current implementation supports a deliberately focused subset of Liquid:
+Benchmark snapshot from this repository:
+
+- gzipped engine size: `9006 B`
+- first byte, `liquidstream`: `2.503 ms`
+- first byte, `liquidjs`: `39.276 ms`
+- heavy 1 MB render, `liquidstream`: `32.757 ms`
+- heavy 1 MB render, `liquidjs`: `38.483 ms`
+
+Those numbers come from [scripts/benchmark-liquid.mjs](/home/esente/Projects/sntran/sntran.com/scripts/benchmark-liquid.mjs). Tiny full-string renders can still be faster in `liquidjs`, but `liquidstream` is designed to win where streaming and Worker behavior matter more than small-template throughput.
+
+## Drop-in Compatibility
+
+The exported class is still named `Liquid`, so most `liquidjs` usage can be migrated with only an import change.
+
+Before:
+
+```js
+import { Liquid } from "liquidjs";
+
+const engine = new Liquid();
+const html = await engine.parseAndRender("<p>{{ name }}</p>", {
+  name: "Ada",
+});
+```
+
+After:
+
+```js
+import { Liquid } from "@sntran/liquidstream";
+
+const engine = new Liquid();
+const html = await engine.parseAndRender("<p>{{ name }}</p>", {
+  name: "Ada",
+});
+```
+
+The main compatibility goal is simple: if your project already thinks in terms of `new Liquid()` plus `parseAndRender()`, `liquidstream` should be a practical drop-in replacement for most use cases.
+
+## Installation
+
+```bash
+npm install @sntran/liquidstream
+```
+
+## Quick Start
+
+```js
+import { Liquid } from "@sntran/liquidstream";
+
+const engine = new Liquid();
+
+const html = await engine.parseAndRender(
+  "<p>{{ greeting }}, {{ user.name }}!</p>",
+  {
+    greeting: "Hello",
+    user: { name: "Alice" },
+  },
+);
+
+console.log(html);
+// <p>Hello, Alice!</p>
+```
+
+## Worker-Native Example
+
+The package is built for Worker environments. Here is a copy-pasteable Cloudflare Worker example that fetches a Liquid template, renders it, and then applies an outer `HTMLRewriter` pass:
+
+```js
+import { Liquid } from "@sntran/liquidstream";
+import { HTMLRewriter } from "@sntran/html-rewriter";
+
+const liquid = new Liquid({
+  fetch,
+  HTMLRewriterClass: HTMLRewriter,
+});
+
+export default {
+  async fetch(request) {
+    const template = `
+      <main>
+        <h1>{{ page.title }}</h1>
+        <div id="content">{{ page.body }}</div>
+      </main>
+    `;
+
+    const html = await liquid.parseAndRender(template, {
+      page: {
+        title: "Hello from Workers",
+        body: "Streaming Liquid on Cloudflare.",
+      },
+    });
+
+    const response = new Response(html, {
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+      },
+    });
+
+    return new HTMLRewriter()
+      .on("#content", {
+        element(element) {
+          element.setAttribute("data-rendered", "true");
+        },
+      })
+      .transform(response);
+  },
+};
+```
+
+## Supported Features
+
+`liquidstream` intentionally supports a focused but practical Liquid subset:
 
 - variable interpolation: `{{ user.name }}`
 - whitespace control: `{{- value -}}`, `{%- if true -%}`
@@ -41,7 +149,10 @@ The current implementation supports a deliberately focused subset of Liquid:
 - `raw`
 - `increment`, `decrement`
 - range expressions such as `(1..5)` and `(start..end)`
-- array and object literals such as `["red", "blue"]` and `{"name": "Ada"}`
+- array and object literals such as `[
+  "red",
+  "blue"
+]` and `{"name": "Ada"}`
 - comparison operators: `==`, `!=`, `>`, `<`, `>=`, `<=`, `contains`
 - boolean operators: `and`, `or`
 - logic inside attribute values
@@ -49,8 +160,9 @@ The current implementation supports a deliberately focused subset of Liquid:
 - custom tags
 - Liquid truthiness semantics where only `false`, `null`, and `undefined` are falsey
 
-It also includes a standard filter library with filters such as:
+Built-in filters include:
 
+- `relative_url`
 - `upcase`
 - `downcase`
 - `capitalize`
@@ -64,7 +176,6 @@ It also includes a standard filter library with filters such as:
 - `last`
 - `date`
 - `default`
-- `relative_url`
 - `strip_html`
 - `newline_to_br`
 - `abs`
@@ -76,54 +187,44 @@ It also includes a standard filter library with filters such as:
 - `url_encode`
 - `url_decode`
 
-## What Is Missing Compared To `liquidjs`
+## API
 
-This package is intentionally smaller than `liquidjs`. It does not aim for full Shopify or Jekyll compatibility.
+### `new Liquid(options?)`
 
-Notable gaps today include:
+Creates a renderer instance.
 
-- no parser/AST API such as `parse()`, `render()`, or template compilation and caching layers
-- no `layout`, `block`, `tablerow`, or `cycle` tags
-- no `break` or `continue` inside loops
-- no full whitespace-control parity in every edge case
-- no full filter catalog from Shopify or `liquidjs`
-- no dynamic file-system loaders, partial loaders, or template resolution strategies
-- no custom parser hooks, tokenizer plugins, or AST transforms
-- no attempt to support every Ruby Liquid edge case around error recovery or ambiguous syntax
+Supported options:
 
-Implemented behavior may also differ deliberately in a few places because this engine is optimized for Worker safety and a narrow template subset rather than broad compatibility.
+- `HTMLRewriterClass`: inject a custom `HTMLRewriter` implementation for tests or alternate runtimes
+- `autoEscape`: defaults to `true`
+- `fetch`: fetch implementation used by `render` and `include`; defaults to `globalThis.fetch`
+- `filters`: instance-local filter overrides and extensions
+- `tags`: instance-local custom tags
+- `yieldAfter`: iteration threshold for cooperative yielding inside large loop renders
+- `yieldControl`: custom async yield hook used during large loops
 
-## Installation
+### `parseAndRender(html, context)`
 
-```bash
-npm install @sntran/liquid-html-rewriter
-```
+Renders a template string with the provided context.
 
-## Quick Start
+### `registerFilter(name, filter)`
 
-```js
-import { Liquid } from "@sntran/liquid-html-rewriter";
+Adds or overrides an instance-local filter.
 
-const engine = new Liquid();
+### `registerTag(name, handler)`
 
-const html = await engine.parseAndRender(
-  "<p>{{ greeting }}, {{ user.name }}!</p>",
-  {
-    greeting: "Hello",
-    user: { name: "Alice" },
-  },
-);
+Adds or overrides an instance-local custom tag.
 
-console.log(html);
-// <p>Hello, Alice!</p>
-```
+### `createHandler(context)`
+
+Returns the low-level `HTMLRewriter` handlers used internally for `element` and `text` processing. This is mainly useful for tests and advanced integration work.
 
 ## Filters
 
 Constructor-provided filters override the shared standard library by shadowing it on the instance:
 
 ```js
-import { Liquid } from "@sntran/liquid-html-rewriter";
+import { Liquid } from "@sntran/liquidstream";
 
 const engine = new Liquid({
   filters: {
@@ -152,7 +253,7 @@ console.log(await engine.parseAndRender('{{ "hello" | surround: "(", ")" }}', {}
 
 ## Custom Tags
 
-Custom tags hook into the `STATE_EMIT` pass and can return either plain output or `{ output, html }`.
+Custom tags run during the `EMIT` phase of the state machine and can return either plain output or `{ output, html }`.
 
 ```js
 const engine = new Liquid({
@@ -176,106 +277,45 @@ engine.registerTag("raw_box", () => ({
 }));
 ```
 
-## API
+## How It Works
 
-### `new Liquid(options?)`
+The core engine lives in [src/index.js](/home/esente/Projects/sntran/sntran.com/packages/liquid-html-rewriter/src/index.js).
 
-Creates a renderer instance.
+At a high level:
 
-Supported options:
+- `HTMLRewriter` provides the streaming bridge between incoming HTML and Liquid evaluation
+- text chunks are buffered until `lastInTextNode` to avoid breaking split tags like `{{ user.` and `name }}`
+- a small state machine drives rendering with `EMIT`, `SKIP`, `CAPTURE`, and `RAW`
+- child scopes are created with `Object.create(parent)` to keep scope creation cheap and predictable
+- large loops yield cooperatively with `scheduler.yield()` or `setTimeout(..., 0)` to stay Worker-friendly
 
-- `HTMLRewriterClass`: inject a custom `HTMLRewriter` implementation for tests or alternate runtimes
-- `autoEscape`: defaults to `true`
-- `fetch`: fetch implementation used by `render` and `include`; defaults to `globalThis.fetch`
-- `filters`: instance-local filter overrides/extensions
-- `tags`: instance-local custom tags
-- `yieldAfter`: iteration threshold for cooperative yielding inside large loop renders
-- `yieldControl`: custom async yield hook used during large loops
+Contributor note: readability wins over micro-optimizations here. This project does care about size and performance, but not at the cost of making the engine impossible to maintain. If a change improves clarity while preserving the streaming model and Worker safety, that is usually the right tradeoff.
 
-### `parseAndRender(html, context)`
+## Security And Runtime Model
 
-Renders a template string with the provided context.
+- no `eval()`
+- no `new Function()`
+- no dynamic code generation
+- partials use native `fetch`
+- large loops yield cooperatively for Worker safety
 
-### `registerFilter(name, filter)`
+## What Is Missing Compared To `liquidjs`
 
-Adds or overrides an instance-local filter.
+`liquidstream` is intentionally smaller than `liquidjs`. It does not aim for full Shopify or Jekyll compatibility.
 
-### `registerTag(name, handler)`
+Notable gaps include:
 
-Adds or overrides an instance-local custom tag.
+- no parser or AST API such as `parse()`, compiled templates, or caching layers
+- no `layout`, `block`, `tablerow`, or `cycle` tags
+- no `break` or `continue` inside loops
+- no full filter catalog parity with Shopify or `liquidjs`
+- no filesystem loader abstraction or rich template resolution pipeline
+- no parser hooks, tokenizer plugins, or AST transforms
+- no attempt to reproduce every Ruby Liquid edge case exactly
 
-### `createHandler(context)`
+## Development
 
-Creates the underlying `HTMLRewriter` handler pair used internally for `element` and `text` processing. This is mostly useful for tests and advanced integration work.
-
-### `resolveExpression(expression, context, options?)`
-
-Resolves an expression with or without filters. This powers both `resolveValue` and `resolveArgument`.
-
-## Implementation Notes
-
-### Streaming Model
-
-The engine buffers split text chunks until `lastInTextNode` is `true`, then processes the combined text through a single-pass state machine. This is what makes chunk boundaries transparent to template behavior.
-
-### State Machine
-
-The core renderer uses four states:
-
-- `EMIT`: normal rendering
-- `SKIP`: active branch skipping for false conditionals
-- `CAPTURE`: buffered block capture for `for` and `capture`
-- `RAW`: literal passthrough until `{% endraw %}`
-
-### Scope Model
-
-All child scopes use:
-
-```js
-Object.create(parent)
-```
-
-That gives O(1) scope creation and avoids cloning large context objects on every branch or loop iteration.
-
-### Filter Registry
-
-Standard filters live in a shared prototype object. Instance filters are created like this:
-
-```js
-Object.assign(Object.create(FILTERS), options.filters || {})
-```
-
-That means:
-
-- no constructor-time re-registration of every standard filter
-- user filters can override built-ins by shadowing
-- instances stay isolated from one another
-
-### Worker Safety
-
-Large loop renders yield cooperatively every `yieldAfter` iterations using `scheduler.yield()` when available, or `setTimeout(..., 0)` as a fallback.
-
-Partials loaded through `render` and `include` use the native `fetch` API with `Request` objects, which keeps the integration aligned with Cloudflare Workers.
-
-### Security
-
-The engine does not use `eval()` or `new Function()`.
-
-Attribute values are escaped through `escapeAttribute()`, and normal variable output is HTML-escaped by default.
-
-## Testing
-
-The package includes:
-
-- deterministic unit and regression tests
-- compatibility tests against `liquidjs`
-- property-based tests using `fast-check`
-- performance smoke tests
-- a reproducible benchmark script
-
-The suites are run serially on purpose. In practice the engine is deterministic, but a few timing-sensitive performance and property checks are more stable when each file gets its own Node test process.
-
-Run them with:
+From the package directory:
 
 ```bash
 npm test
@@ -283,69 +323,6 @@ npm run coverage
 npm run benchmark
 ```
 
-## Package Layout
+## License
 
-```text
-packages/liquid-html-rewriter/
-  package.json
-  README.md
-  src/
-    index.js
-  test/
-    liquid.test.js
-    filters.test.js
-    compatibility.test.js
-    properties.test.js
-    performance.test.js
-  scripts/
-    run-tests.mjs
-    benchmark-liquid.mjs
-```
-
-## Rendering Pipeline
-
-At a high level, `parseAndRender()` works like this:
-
-1. Wrap the incoming HTML in a `Response`
-2. Stream it through `HTMLRewriter`
-3. Buffer text chunks until `lastInTextNode`
-4. Run the buffered text through the Liquid state machine
-5. Emit interpolated HTML, captured blocks, or skipped content depending on state
-
-That keeps the implementation Worker-friendly while still allowing `for`, `if`, `capture`, custom tags, and attribute-level Liquid logic.
-
-## Example: Explorer Tree Rendering
-
-One of the main production use cases is rendering a Jekyll-style include in multiple runtimes from the same source template:
-
-```js
-import { Liquid } from "@sntran/liquid-html-rewriter";
-
-const engine = new Liquid();
-const template = `
-  <ul>
-    {% for post in site.posts %}
-      <li><a href="{{ post.url }}">{{ post.title }}</a></li>
-    {% endfor %}
-  </ul>
-`;
-
-const html = await engine.parseAndRender(template, {
-  site: {
-    posts: [
-      { url: "/notes/one/", title: "One" },
-      { url: "/notes/two/", title: "Two" },
-    ],
-  },
-});
-```
-
-This approach lets a single Liquid include stay authoritative for GitHub Pages while still rendering on Cloudflare Workers.
-
-## Limitations
-
-This is not a full Shopify/Jekyll Liquid implementation. It intentionally focuses on the subset needed by this project and on the operational constraints of Worker runtimes.
-
-If you are evaluating this package against `liquidjs`, treat it as a focused runtime renderer rather than a general-purpose Liquid platform.
-
-If you need full Liquid compatibility across the entire Shopify ecosystem, use a full engine like `liquidjs`. If you need a compact, Worker-friendly renderer with predictable behavior and a small footprint, this package is the better fit.
+MIT

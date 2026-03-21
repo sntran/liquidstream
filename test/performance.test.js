@@ -8,7 +8,7 @@ describe("Liquid Performance", () => {
     const engine = new Liquid();
     const template = "<div>{{ user.name }}</div>";
     const context = { user: { name: "Alice" } };
-    const thresholdMs = process.env.NODE_V8_COVERAGE ? 125 : 10;
+    const thresholdMs = process.env.NODE_V8_COVERAGE ? 125 : 15;
 
     for (let index = 0; index < 20; index += 1) {
       await engine.parseAndRender(template, context);

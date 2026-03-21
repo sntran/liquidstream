@@ -1,16 +1,29 @@
 {
-  "name": "@sntran/liquid-html-rewriter",
+  "name": "@sntran/liquidstream",
   "version": "0.1.0",
   "description": "A lightweight Liquid subset renderer built on HTMLRewriter for Cloudflare Workers and Node.js.",
   "type": "module",
   "main": "./src/index.js",
   "exports": {
-    ".": "./src/index.js"
+    ".": {
+      "import": "./src/index.js",
+      "default": "./src/index.js"
+    }
   },
   "files": [
     "src",
     "README.md"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sntran/liquidstream.git",
+    "directory": "packages/liquid-html-rewriter"
+  },
+  "homepage": "https://github.com/sntran/liquidstream/",
+  "bugs": {
+    "url": "https://github.com/sntran/liquidstream/issues"
+  },
+  "license": "MIT",
   "scripts": {
     "test": "node scripts/run-tests.mjs",
     "coverage": "c8 --reporter=text --include=src/index.js node scripts/run-tests.mjs",

@@ -39,6 +39,17 @@ describe("Liquid Standard Filters", () => {
     assert.equal(html, "March 21");
   });
 
+  it("supports Intl-backed weekday and month tokens", async () => {
+    const engine = new Liquid();
+
+    const html = await engine.parseAndRender(
+      '{{ "2026-03-21" | date: "%a, %A, %b, %B" }}',
+      {},
+    );
+
+    assert.equal(html, "Sat, Saturday, Mar, March");
+  });
+
   it("supports Date objects, date-time strings, and invalid numeric dates", async () => {
     const engine = new Liquid();
 
