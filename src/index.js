@@ -1,31 +1,330 @@
-import { HTMLRewriter } from "@sntran/html-rewriter";
+import { HTMLRewriter as DefaultHTMLRewriter } from "@sntran/html-rewriter";
 
-export const EMPTY_STRING = "";
-export const STATE_EMIT = "EMIT";
-export const STATE_SKIP = "SKIP";
-export const STATE_CAPTURE = "CAPTURE";
+const STATE_EMIT = "EMIT";
+const STATE_SKIP = "SKIP";
+const STATE_CAPTURE = "CAPTURE";
+const STATE_RAW = "RAW";
 
-export const FILTERS = {
-  upcase(value) {
-    return String(value ?? EMPTY_STRING).toUpperCase();
-  },
-  downcase(value) {
-    return String(value ?? EMPTY_STRING).toLowerCase();
-  },
-  capitalize(value) {
-    const text = String(value ?? EMPTY_STRING);
-    return text ? `${text[0].toUpperCase()}${text.slice(1).toLowerCase()}` : text;
-  },
-  default(value, fallback = EMPTY_STRING) {
-    return value === undefined || value === null || value === EMPTY_STRING
-      ? fallback
-      : value;
-  },
-};
+const FOR_PATTERN = /^for\s+(\w+)\s+in\s+(.+)$/;
+const ASSIGN_PATTERN = /^assign\s+(\w+)\s*=\s*(.+)$/;
+const CAPTURE_PATTERN = /^capture\s+(\w+)$/;
+const INCREMENT_PATTERN = /^(increment|decrement)\s+(\w+)$/;
+const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const NUMBER_PATTERN = /^-?\d+(?:\.\d+)?$/;
+const RANGE_PATTERN = /^\((.+)\.\.(.+)\)$/;
+const VARIABLE_OPEN = "{{";
+const VARIABLE_CLOSE = "}}";
+const BLOCK_OPEN = "{%";
+const BLOCK_CLOSE = "%}";
+const EMPTY_STRING = "";
+const HTML_VALUE = Symbol("liquidHtmlValue");
+const WHITESPACE_CHARACTERS = new Set([" ", "\n", "\r", "\t", "\f"]);
+const COMPARISON_OPERATORS = [">=", "<=", "!=", "==", ">", "<"];
 
-export function splitTopLevel(expression = EMPTY_STRING, separator = ".") {
+function escapeHtml(value = EMPTY_STRING) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function escapeAttribute(value = EMPTY_STRING) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll('"', "&quot;");
+}
+
+function createHtmlValue(value = EMPTY_STRING) {
+  return {
+    [HTML_VALUE]: true,
+    value: String(value),
+  };
+}
+
+function unwrapHtmlValue(value) {
+  return value && typeof value === "object" && value[HTML_VALUE] ? value.value : value;
+}
+
+function createScope(parent = null) {
+  return Object.create(parent && typeof parent === "object" ? parent : null);
+}
+
+function parseForExpression(expression = EMPTY_STRING) {
+  const tokens = splitTopLevel(expression, " ").filter(Boolean);
+  if (tokens.length < 4 || tokens[0] !== "for" || tokens[2] !== "in") {
+    return null;
+  }
+
+  const collectionTokens = [];
+  let limitExpression = null;
+  let offsetExpression = null;
+  let reversed = false;
+
+  for (let index = 3; index < tokens.length; index += 1) {
+    const token = tokens[index];
+
+    if (token === "reversed") {
+      reversed = true;
+      continue;
+    }
+
+    if (token.startsWith("limit:")) {
+      limitExpression = token.slice(6).trim();
+      continue;
+    }
+
+    if (token.startsWith("offset:")) {
+      offsetExpression = token.slice(7).trim();
+      continue;
+    }
+
+    collectionTokens.push(token);
+  }
+
+  return {
+    itemName: tokens[1],
+    collectionPath: collectionTokens.join(" ").trim(),
+    limitExpression,
+    offsetExpression,
+    reversed,
+  };
+}
+
+function parseAssignExpression(expression = EMPTY_STRING) {
+  const match = ASSIGN_PATTERN.exec(expression);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    variableName: match[1],
+    valueExpression: match[2].trim(),
+  };
+}
+
+function parseCaptureExpression(expression = EMPTY_STRING) {
+  const match = CAPTURE_PATTERN.exec(expression);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    variableName: match[1],
+  };
+}
+
+function parseCounterExpression(expression = EMPTY_STRING) {
+  const match = INCREMENT_PATTERN.exec(expression);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    operation: match[1],
+    variableName: match[2],
+  };
+}
+
+function parseNamedArgument(expression = EMPTY_STRING) {
+  const [name, valueExpression] = splitFilterNameAndArguments(expression);
+  if (!name || !valueExpression) {
+    return null;
+  }
+
+  return {
+    name,
+    valueExpression,
+  };
+}
+
+function parsePartialExpression(expression = EMPTY_STRING) {
+  const segments = splitTopLevel(expression, ",").filter(Boolean);
+  if (segments.length === 0) {
+    return {
+      snippetExpression: EMPTY_STRING,
+      argumentsList: [],
+    };
+  }
+
+  return {
+    snippetExpression: segments[0],
+    argumentsList: segments.slice(1)
+      .map((segment) => parseNamedArgument(segment))
+      .filter(Boolean),
+  };
+}
+
+function getNextLiquidMarker(text, startIndex) {
+  const nextVariable = text.indexOf(VARIABLE_OPEN, startIndex);
+  const nextBlock = text.indexOf(BLOCK_OPEN, startIndex);
+
+  if (nextVariable === -1) {
+    return nextBlock;
+  }
+
+  if (nextBlock === -1) {
+    return nextVariable;
+  }
+
+  return nextVariable < nextBlock ? nextVariable : nextBlock;
+}
+
+function readLiquidTag(text, startIndex, openToken, closeToken) {
+  let contentStart = startIndex + openToken.length;
+  let trimLeft = false;
+
+  if (text[contentStart] === "-") {
+    trimLeft = true;
+    contentStart += 1;
+  }
+
+  const closeIndex = text.indexOf(closeToken, contentStart);
+  if (closeIndex === -1) {
+    return null;
+  }
+
+  const trimRight = text[closeIndex - 1] === "-";
+  const contentEnd = trimRight ? closeIndex - 1 : closeIndex;
+
+  return {
+    raw: text.slice(startIndex, closeIndex + closeToken.length),
+    content: text.slice(contentStart, contentEnd).trim(),
+    endIndex: closeIndex + closeToken.length,
+    trimLeft,
+    trimRight,
+  };
+}
+
+function serializeStartTag(element) {
+  const attributes = [...element.attributes]
+    .map(([name, value]) => (!value ? name : `${name}="${escapeAttribute(value)}"`))
+    .join(" ");
+
+  return attributes ? `<${element.tagName} ${attributes}>` : `<${element.tagName}>`;
+}
+
+function serializeEndTag(tagName) {
+  return `</${tagName}>`;
+}
+
+function updateScanState(state, char) {
+  if ((char === '"' || char === "'") && (!state.quote || state.quote === char)) {
+    state.quote = state.quote === char ? null : char;
+    return;
+  }
+
+  if (state.quote) {
+    return;
+  }
+
+  if (char === "(") {
+    state.parenDepth += 1;
+  } else if (char === ")") {
+    state.parenDepth = Math.max(0, state.parenDepth - 1);
+  } else if (char === "[") {
+    state.squareDepth += 1;
+  } else if (char === "]") {
+    state.squareDepth = Math.max(0, state.squareDepth - 1);
+  } else if (char === "{") {
+    state.curlyDepth += 1;
+  } else if (char === "}") {
+    state.curlyDepth = Math.max(0, state.curlyDepth - 1);
+  }
+}
+
+function isTopLevel(state) {
+  return !state.quote && state.parenDepth === 0 && state.squareDepth === 0 && state.curlyDepth === 0;
+}
+
+function splitTopLevel(expression = EMPTY_STRING, separator) {
   const parts = [];
   let current = EMPTY_STRING;
+  const state = {
+    quote: null,
+    parenDepth: 0,
+    squareDepth: 0,
+    curlyDepth: 0,
+  };
+
+  for (let index = 0; index < expression.length; index += 1) {
+    const char = expression[index];
+
+    if (isTopLevel(state) && expression.startsWith(separator, index)) {
+      parts.push(current.trim());
+      current = EMPTY_STRING;
+      index += separator.length - 1;
+      continue;
+    }
+
+    current += char;
+    updateScanState(state, char);
+  }
+
+  parts.push(current.trim());
+  return parts;
+}
+
+function splitTopLevelKeyword(expression = EMPTY_STRING, keyword) {
+  const parts = [];
+  let current = EMPTY_STRING;
+  const state = {
+    quote: null,
+    parenDepth: 0,
+    squareDepth: 0,
+    curlyDepth: 0,
+  };
+  const pattern = ` ${keyword} `;
+
+  for (let index = 0; index < expression.length; index += 1) {
+    const char = expression[index];
+
+    if (isTopLevel(state) && expression.startsWith(pattern, index)) {
+      parts.push(current.trim());
+      current = EMPTY_STRING;
+      index += pattern.length - 1;
+      continue;
+    }
+
+    current += char;
+    updateScanState(state, char);
+  }
+
+  parts.push(current.trim());
+  return parts;
+}
+
+function findTopLevelOperator(expression = EMPTY_STRING, operator) {
+  const state = {
+    quote: null,
+    parenDepth: 0,
+    squareDepth: 0,
+    curlyDepth: 0,
+  };
+
+  for (let index = 0; index < expression.length; index += 1) {
+    const char = expression[index];
+
+    if (isTopLevel(state) && expression.startsWith(operator, index)) {
+      return index;
+    }
+
+    updateScanState(state, char);
+  }
+
+  return -1;
+}
+
+function splitFilterSegments(expression = EMPTY_STRING) {
+  return splitTopLevel(expression, "|");
+}
+
+function splitFilterArguments(expression = EMPTY_STRING) {
+  return splitTopLevel(expression, ",").filter(Boolean);
+}
+
+function splitFilterNameAndArguments(expression = EMPTY_STRING) {
   let quote = null;
 
   for (let index = 0; index < expression.length; index += 1) {
@@ -33,304 +332,1313 @@ export function splitTopLevel(expression = EMPTY_STRING, separator = ".") {
 
     if ((char === '"' || char === "'") && (!quote || quote === char)) {
       quote = quote === char ? null : char;
-      current += char;
       continue;
     }
 
-    if (char === separator && !quote) {
-      parts.push(current.trim());
-      current = EMPTY_STRING;
+    if (char === ":" && !quote) {
+      return [expression.slice(0, index).trim(), expression.slice(index + 1).trim()];
+    }
+  }
+
+  return [expression.trim(), EMPTY_STRING];
+}
+
+function splitRangeExpression(expression = EMPTY_STRING) {
+  const match = RANGE_PATTERN.exec(expression.trim());
+  if (!match) {
+    return null;
+  }
+
+  return {
+    start: match[1].trim(),
+    end: match[2].trim(),
+  };
+}
+
+function normalizeLiteralKey(key = EMPTY_STRING) {
+  const trimmed = key.trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+
+  return trimmed;
+}
+
+function parseDateValue(value) {
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed === "now") {
+      return new Date();
+    }
+
+    const normalized = DATE_ONLY_PATTERN.test(trimmed)
+      ? `${trimmed}T00:00:00Z`
+      : trimmed;
+    const parsed = new Date(normalized);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  if (typeof value === "number") {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  return null;
+}
+
+function formatDate(value, format = "%Y-%m-%d") {
+  const date = parseDateValue(value);
+  if (!date) {
+    return EMPTY_STRING;
+  }
+
+  const shortMonths = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+  ];
+  const longMonths = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+  ];
+  const pad = (number) => String(number).padStart(2, "0");
+  const replacements = {
+    "%Y": String(date.getUTCFullYear()),
+    "%m": pad(date.getUTCMonth() + 1),
+    "%d": pad(date.getUTCDate()),
+    "%H": pad(date.getUTCHours()),
+    "%M": pad(date.getUTCMinutes()),
+    "%S": pad(date.getUTCSeconds()),
+    "%b": shortMonths[date.getUTCMonth()],
+    "%B": longMonths[date.getUTCMonth()],
+  };
+
+  let result = String(format);
+  for (const [token, replacement] of Object.entries(replacements)) {
+    result = result.replaceAll(token, replacement);
+  }
+
+  return result;
+}
+
+function skipLeadingWhitespace(text, index) {
+  let cursor = index;
+
+  while (cursor < text.length && WHITESPACE_CHARACTERS.has(text[cursor])) {
+    cursor += 1;
+  }
+
+  return cursor;
+}
+
+function trimTrailingWhitespace(text) {
+  let cursor = text.length;
+
+  while (cursor > 0 && WHITESPACE_CHARACTERS.has(text[cursor - 1])) {
+    cursor -= 1;
+  }
+
+  return text.slice(0, cursor);
+}
+
+function parsePathSegments(expression = EMPTY_STRING) {
+  const segments = [];
+  let current = EMPTY_STRING;
+
+  for (let index = 0; index < expression.length; index += 1) {
+    const char = expression[index];
+
+    if (char === ".") {
+      if (current) {
+        segments.push(current);
+        current = EMPTY_STRING;
+      }
+      continue;
+    }
+
+    if (char === "[") {
+      if (current) {
+        segments.push(current);
+        current = EMPTY_STRING;
+      }
+
+      let quote = null;
+      let bracketContent = EMPTY_STRING;
+      let cursor = index + 1;
+
+      while (cursor < expression.length) {
+        const bracketChar = expression[cursor];
+
+        if ((bracketChar === '"' || bracketChar === "'") && (!quote || quote === bracketChar)) {
+          quote = quote === bracketChar ? null : bracketChar;
+          bracketContent += bracketChar;
+          cursor += 1;
+          continue;
+        }
+
+        if (bracketChar === "]" && !quote) {
+          break;
+        }
+
+        bracketContent += bracketChar;
+        cursor += 1;
+      }
+
+      if (cursor >= expression.length) {
+        return [expression];
+      }
+
+      const trimmed = bracketContent.trim();
+      if (
+        (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+        (trimmed.startsWith("'") && trimmed.endsWith("'"))
+      ) {
+        segments.push(trimmed.slice(1, -1));
+      } else if (NUMBER_PATTERN.test(trimmed)) {
+        segments.push(Number(trimmed));
+      } else if (trimmed) {
+        segments.push(trimmed);
+      }
+
+      index = cursor;
       continue;
     }
 
     current += char;
   }
 
-  parts.push(current.trim());
-  return parts;
+  if (current) {
+    segments.push(current);
+  }
+
+  return segments;
 }
 
-export function parsePathSegments(expression = EMPTY_STRING) {
-  return splitTopLevel(expression, ".").filter(Boolean);
-}
-
-export function resolvePathValue(value, segment) {
+function resolvePathValue(value, segment) {
   if (value === null || value === undefined) {
     return undefined;
+  }
+
+  if (segment === "first" && (Array.isArray(value) || typeof value === "string")) {
+    return value[0];
+  }
+
+  if (segment === "last" && (Array.isArray(value) || typeof value === "string")) {
+    return value.length ? value[value.length - 1] : undefined;
   }
 
   return value?.[segment];
 }
 
-export function escapeHtml(value) {
-  return String(value ?? EMPTY_STRING)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
+function isLiquidTruthy(value) {
+  return value !== false && value !== null && value !== undefined;
 }
 
-export async function defaultYieldControl() {
+function parseTagInvocation(content = EMPTY_STRING) {
+  const separator = content.indexOf(" ");
+  if (separator === -1) {
+    return {
+      name: content.trim(),
+      expression: EMPTY_STRING,
+    };
+  }
+
+  return {
+    name: content.slice(0, separator).trim(),
+    expression: content.slice(separator + 1).trim(),
+  };
+}
+
+async function defaultYieldControl() {
+  if (globalThis.scheduler && typeof globalThis.scheduler.yield === "function") {
+    await globalThis.scheduler.yield();
+    return;
+  }
+
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+function createRuntime() {
+  return {
+    counters: Object.create(null),
+  };
+}
+
+function createHandlerState(scope, options = {}) {
+  return {
+    state: STATE_EMIT,
+    currentContext: scope,
+    textBufferParts: [],
+    ifStack: [],
+    skipDepth: 0,
+    skipMode: null,
+    capture: null,
+    raw: null,
+    runtime: options.runtime || createRuntime(),
+    renderDepth: options.renderDepth || 0,
+  };
+}
+
+function createCaptureState(mode, options = {}) {
+  return {
+    mode,
+    itemName: options.itemName || null,
+    collection: options.collection || null,
+    variableName: options.variableName || null,
+    depth: 0,
+    bufferParts: [],
+  };
+}
+
+function appendCapturePart(capture, value) {
+  if (value) {
+    capture.bufferParts.push(value);
+  }
+}
+
+function createRawState() {
+  return {
+    bufferParts: [],
+  };
+}
+
+function appendRawPart(raw, value) {
+  if (value) {
+    raw.bufferParts.push(value);
+  }
+}
+
+function createConditionalFrame(truthy, currentContext) {
+  return {
+    type: "if",
+    truthy,
+    parentContext: currentContext,
+    branchContext: createScope(currentContext),
+  };
+}
+
+function createCaseFrame(switchValue, currentContext) {
+  return {
+    type: "case",
+    switchValue,
+    matched: false,
+    parentContext: currentContext,
+    branchContext: null,
+  };
+}
+
+function createLoopMetadata(index, length) {
+  return {
+    index: index + 1,
+    index0: index,
+    first: index === 0,
+    last: index === length - 1,
+    length,
+  };
+}
+
+function evaluateWhenMatch(engine, expression, switchValue, context) {
+  const candidates = splitTopLevel(expression, ",")
+    .flatMap((segment) => splitTopLevel(segment, " "))
+    .filter((segment) => segment && segment !== "or");
+
+  return candidates.some((candidate) => engine.resolveValue(candidate, context) === switchValue);
+}
+
+const FILTERS = {
+  relative_url(value) {
+    return value || "";
+  },
+  upcase(value) {
+    return String(value ?? EMPTY_STRING).toUpperCase();
+  },
+  downcase(value) {
+    return String(value ?? EMPTY_STRING).toLowerCase();
+  },
+  capitalize(value) {
+    const string = String(value ?? EMPTY_STRING);
+    return string ? `${string[0].toUpperCase()}${string.slice(1)}` : EMPTY_STRING;
+  },
+  strip(value) {
+    return String(value ?? EMPTY_STRING).trim();
+  },
+  size(value) {
+    if (Array.isArray(value) || typeof value === "string") {
+      return value.length;
+    }
+
+    return 0;
+  },
+  slice(value, start = 0, length) {
+    const startIndex = Number(start) || 0;
+    const endIndex = length === undefined ? undefined : startIndex + Number(length);
+
+    if (Array.isArray(value)) {
+      return value.slice(startIndex, endIndex);
+    }
+
+    const string = String(value ?? EMPTY_STRING);
+    return string.slice(startIndex, endIndex);
+  },
+  join(value, delimiter = " ") {
+    return Array.isArray(value) ? value.join(String(delimiter)) : EMPTY_STRING;
+  },
+  split(value, delimiter = " ") {
+    return typeof value === "string" ? value.split(String(delimiter)) : [];
+  },
+  map(value, property) {
+    return Array.isArray(value) ? value.map((item) => item?.[property]) : [];
+  },
+  first(value) {
+    if (Array.isArray(value) || typeof value === "string") {
+      return value[0] ?? EMPTY_STRING;
+    }
+
+    return EMPTY_STRING;
+  },
+  last(value) {
+    if (Array.isArray(value) || typeof value === "string") {
+      return value.length ? value[value.length - 1] : EMPTY_STRING;
+    }
+
+    return EMPTY_STRING;
+  },
+  date(value, format) {
+    return formatDate(value, format);
+  },
+  default(value, fallback = EMPTY_STRING) {
+    return value === undefined || value === null || value === EMPTY_STRING || value === false ? fallback : value;
+  },
+  strip_html(value) {
+    return String(value ?? EMPTY_STRING).replaceAll(/<[^>]+>/g, EMPTY_STRING);
+  },
+  newline_to_br(value) {
+    return createHtmlValue(String(value ?? EMPTY_STRING).replaceAll("\n", "<br />"));
+  },
+  abs(value) {
+    const number = Number(value);
+    return Number.isNaN(number) ? 0 : Math.abs(number);
+  },
+  at_least(value, minimum) {
+    const current = Number(value);
+    const floor = Number(minimum);
+    return Number.isNaN(current) || Number.isNaN(floor) ? 0 : Math.max(current, floor);
+  },
+  at_most(value, maximum) {
+    const current = Number(value);
+    const ceiling = Number(maximum);
+    return Number.isNaN(current) || Number.isNaN(ceiling) ? 0 : Math.min(current, ceiling);
+  },
+  ceil(value) {
+    const number = Number(value);
+    return Number.isNaN(number) ? 0 : Math.ceil(number);
+  },
+  floor(value) {
+    const number = Number(value);
+    return Number.isNaN(number) ? 0 : Math.floor(number);
+  },
+  round(value, precision = 0) {
+    const number = Number(value);
+    const digits = Number(precision);
+    if (Number.isNaN(number) || Number.isNaN(digits)) {
+      return 0;
+    }
+
+    const factor = 10 ** digits;
+    return Math.round(number * factor) / factor;
+  },
+  url_encode(value) {
+    return encodeURIComponent(String(value ?? EMPTY_STRING));
+  },
+  url_decode(value) {
+    try {
+      return decodeURIComponent(String(value ?? EMPTY_STRING));
+    } catch {
+      return String(value ?? EMPTY_STRING);
+    }
+  },
+};
+
 export class Liquid {
   constructor(options = {}) {
-    this.filters = Object.assign(Object.create(FILTERS), options.filters || {});
-    this.HTMLRewriterClass = options.HTMLRewriterClass || HTMLRewriter;
-    this.yieldAfter = options.yieldAfter || 100;
-    this.yieldControl = options.yieldControl || defaultYieldControl;
+    const {
+      HTMLRewriterClass,
+      filters = {},
+      tags = {},
+      fetch,
+      autoEscape = true,
+      yieldAfter = 100,
+      yieldControl,
+    } = options;
+    this.HTMLRewriterClass = HTMLRewriterClass;
+    this.autoEscape = autoEscape;
+    this.fetch = fetch || globalThis.fetch;
+    this.filters = Object.assign(Object.create(FILTERS), filters);
+    this.tags = new Map();
+    this.yieldAfter = yieldAfter;
+    this.yieldControl = yieldControl || defaultYieldControl;
+
+    for (const [name, tag] of Object.entries(tags)) {
+      this.registerTag(name, tag);
+    }
   }
 
   registerFilter(name, filter) {
     this.filters[name] = filter;
   }
 
-  createScope(parent = null) {
-    return Object.create(parent);
+  registerTag(name, handler) {
+    this.tags.set(name, handler);
   }
 
-  createState(context = {}) {
-    const scope = this.createScope(null);
-    Object.assign(scope, context);
+  createHandler(context = {}) {
+    const handler = createHandlerState(createScope(context), {
+      runtime: createRuntime(),
+      renderDepth: 0,
+    });
+
+    const onEndTag = (endTag) => {
+      if (handler.state === STATE_RAW && handler.raw) {
+        appendRawPart(handler.raw, serializeEndTag(endTag.name));
+        endTag.remove();
+        return;
+      }
+
+      if (handler.state === STATE_CAPTURE && handler.capture) {
+        appendCapturePart(handler.capture, serializeEndTag(endTag.name));
+        endTag.remove();
+        return;
+      }
+
+      if (handler.state === STATE_SKIP) {
+        endTag.remove();
+      }
+    };
 
     return {
-      state: STATE_EMIT,
-      context: scope,
-      ifStack: [],
-      textBuffer: [],
-      capture: null,
+      element: async (element) => {
+        if (handler.state === STATE_RAW && handler.raw) {
+          element.onEndTag(onEndTag);
+          appendRawPart(handler.raw, serializeStartTag(element));
+          element.removeAndKeepContent();
+          return;
+        }
+
+        if (handler.state === STATE_CAPTURE && handler.capture) {
+          element.onEndTag(onEndTag);
+          appendCapturePart(handler.capture, serializeStartTag(element));
+          element.removeAndKeepContent();
+          return;
+        }
+
+        if (handler.state === STATE_SKIP) {
+          element.onEndTag(onEndTag);
+          element.removeAndKeepContent();
+          return;
+        }
+
+        const shouldSerializeAttributes = await this.interpolateAttributes(
+          element,
+          handler.currentContext,
+          handler.runtime,
+          handler.renderDepth,
+        );
+        if (shouldSerializeAttributes) {
+          element.before(serializeStartTag(element), { html: true });
+          element.onEndTag((endTag) => {
+            endTag.before(serializeEndTag(endTag.name), { html: true });
+            endTag.remove();
+          });
+          element.removeAndKeepContent();
+        }
+      },
+
+      text: async (chunk) => {
+        handler.textBufferParts.push(chunk.text);
+
+        if (!chunk.lastInTextNode) {
+          chunk.replace(EMPTY_STRING);
+          return;
+        }
+
+        const text = handler.textBufferParts.join(EMPTY_STRING);
+        handler.textBufferParts.length = 0;
+        const output = await this.processText(text, handler);
+        chunk.replace(output, { html: true });
+      },
     };
   }
 
-  resolveExpression(expression, context = {}) {
-    const source = String(expression ?? EMPTY_STRING).trim();
+  async parseAndRender(html, context = {}) {
+    const HTMLRewriterClass = this.HTMLRewriterClass || DefaultHTMLRewriter;
+    const rewriter = new HTMLRewriterClass();
+    const handler = this.createHandler(context);
 
-    if (!source) {
-      return EMPTY_STRING;
-    }
+    rewriter.on("*", { element: handler.element });
+    rewriter.onDocument({ text: handler.text });
 
-    if (
-      (source.startsWith('"') && source.endsWith('"')) ||
-      (source.startsWith("'") && source.endsWith("'"))
-    ) {
-      return source.slice(1, -1);
-    }
-
-    if (/^-?\d+(?:\.\d+)?$/.test(source)) {
-      return Number(source);
-    }
-
-    if (source === "true") {
-      return true;
-    }
-
-    if (source === "false") {
-      return false;
-    }
-
-    if (source === "null" || source === "nil") {
-      return null;
-    }
-
-    return parsePathSegments(source).reduce(resolvePathValue, context);
+    return await rewriter.transform(new Response(html)).text();
   }
 
-  resolveValue(expression, context = {}) {
-    const value = this.resolveExpression(expression, context);
-    return value === undefined || value === null ? EMPTY_STRING : value;
-  }
+  renderResolvedValue(value) {
+    if (value && typeof value === "object" && value[HTML_VALUE]) {
+      return String(value.value ?? EMPTY_STRING);
+    }
 
-  evaluateCondition(expression, context = {}) {
-    return Boolean(this.resolveExpression(expression, context));
+    const string = String(value ?? EMPTY_STRING);
+    return this.autoEscape ? escapeHtml(string) : string;
   }
 
   interpolate(text, context = {}) {
-    return String(text).replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_match, source) => {
-      const parts = splitTopLevel(source, "|");
-      const expression = parts.shift();
-      let value = this.resolveValue(expression, context);
+    const output = [];
+    let cursor = 0;
 
-      for (const step of parts) {
-        const [filterName, argument] = splitTopLevel(step, ":");
-        const filter = this.filters[filterName.trim()];
-
-        if (typeof filter === "function") {
-          value = filter(value, this.resolveValue(argument, context));
-        }
-      }
-
-      return escapeHtml(value);
-    });
-  }
-
-  processEmitText(text, state) {
-    let output = EMPTY_STRING;
-    let index = 0;
-
-    while (index < text.length) {
-      const variableStart = text.indexOf("{{", index);
-      const tagStart = text.indexOf("{%", index);
-      const nextStart = [variableStart, tagStart]
-        .filter((value) => value !== -1)
-        .sort((left, right) => left - right)[0];
-
-      if (nextStart === undefined) {
-        output += this.interpolate(text.slice(index), state.context);
+    while (cursor < text.length) {
+      const marker = text.indexOf(VARIABLE_OPEN, cursor);
+      if (marker === -1) {
+        output.push(text.slice(cursor));
         break;
       }
 
-      output += this.interpolate(text.slice(index, nextStart), state.context);
+      const variable = readLiquidTag(text, marker, VARIABLE_OPEN, VARIABLE_CLOSE);
+      const leadingText = text.slice(cursor, marker);
+      output.push(variable?.trimLeft ? trimTrailingWhitespace(leadingText) : leadingText);
+      if (!variable) {
+        output.push(text.slice(marker));
+        break;
+      }
 
-      if (nextStart === variableStart) {
-        const end = text.indexOf("}}", variableStart);
-        output += this.interpolate(text.slice(variableStart, end + 2), state.context);
-        index = end + 2;
+      output.push(this.renderResolvedValue(this.resolveValue(variable.content, context)));
+      cursor = variable.trimRight ? skipLeadingWhitespace(text, variable.endIndex) : variable.endIndex;
+    }
+
+    return output.join(EMPTY_STRING);
+  }
+
+  async interpolateAttributes(element, context = {}, runtime = createRuntime(), renderDepth = 0) {
+    let shouldSerializeAttributes = false;
+
+    for (const [name, value] of element.attributes) {
+      if (value.indexOf(VARIABLE_OPEN) === -1 && value.indexOf(BLOCK_OPEN) === -1) {
         continue;
       }
 
-      const end = text.indexOf("%}", tagStart);
-      const tag = text.slice(tagStart + 2, end).trim();
-      index = end + 2;
+      shouldSerializeAttributes = true;
+      element.setAttribute(name, await this.renderFragment(value, context, runtime, renderDepth));
+    }
 
-      if (tag.startsWith("assign ")) {
-        const [name, value] = tag.slice(7).split("=");
-        state.context[name.trim()] = this.resolveValue(value, state.context);
+    return shouldSerializeAttributes;
+  }
+
+  parseLiteralExpression(expression, context = {}) {
+    const normalizedExpression = expression.trim();
+
+    if (normalizedExpression.startsWith("[") && normalizedExpression.endsWith("]")) {
+      const inner = normalizedExpression.slice(1, -1).trim();
+      if (!inner) {
+        return [];
+      }
+
+      return splitTopLevel(inner, ",").filter(Boolean).map((item) =>
+        this.resolveExpression(item, context, { applyFilters: false }),
+      );
+    }
+
+    if (normalizedExpression.startsWith("{") && normalizedExpression.endsWith("}")) {
+      const inner = normalizedExpression.slice(1, -1).trim();
+      if (!inner) {
+        return {};
+      }
+
+      const output = {};
+      for (const entry of splitTopLevel(inner, ",").filter(Boolean)) {
+        const [rawKey, rawValue] = splitFilterNameAndArguments(entry);
+        if (!rawKey || !rawValue) {
+          continue;
+        }
+
+        output[normalizeLiteralKey(rawKey)] = this.resolveExpression(rawValue, context, { applyFilters: false });
+      }
+      return output;
+    }
+
+    return null;
+  }
+
+  resolveComparisonValue(expression, context = {}) {
+    return unwrapHtmlValue(this.resolveValue(expression, context));
+  }
+
+  resolveExpression(expression, context = {}, options = {}) {
+    const { applyFilters = true } = options;
+    const normalizedExpression = String(expression ?? EMPTY_STRING).trim();
+
+    if (!applyFilters) {
+      if (!normalizedExpression) {
+        return EMPTY_STRING;
+      }
+
+      const range = splitRangeExpression(normalizedExpression);
+      if (range) {
+        const start = Number(this.resolveExpression(range.start, context, { applyFilters: false }));
+        const end = Number(this.resolveExpression(range.end, context, { applyFilters: false }));
+
+        if (!Number.isInteger(start) || !Number.isInteger(end)) {
+          return [];
+        }
+
+        const step = start <= end ? 1 : -1;
+        const output = [];
+
+        for (let value = start; step > 0 ? value <= end : value >= end; value += step) {
+          output.push(value);
+        }
+
+        return output;
+      }
+
+      const literal = this.parseLiteralExpression(normalizedExpression, context);
+      if (literal !== null) {
+        return literal;
+      }
+
+      if (
+        (normalizedExpression.startsWith('"') && normalizedExpression.endsWith('"')) ||
+        (normalizedExpression.startsWith("'") && normalizedExpression.endsWith("'"))
+      ) {
+        return normalizedExpression.slice(1, -1);
+      }
+
+      if (normalizedExpression === "true") {
+        return true;
+      }
+
+      if (normalizedExpression === "false") {
+        return false;
+      }
+
+      if (normalizedExpression === "null" || normalizedExpression === "nil") {
+        return null;
+      }
+
+      if (NUMBER_PATTERN.test(normalizedExpression)) {
+        return Number(normalizedExpression);
+      }
+
+      return parsePathSegments(normalizedExpression).reduce(resolvePathValue, context);
+    }
+
+    const [base, ...filters] = splitFilterSegments(normalizedExpression);
+    let value = this.resolveExpression(base, context, { applyFilters: false });
+
+    for (const filterExpression of filters) {
+      const [filterName, rawArguments = EMPTY_STRING] = splitFilterNameAndArguments(filterExpression);
+      const filter = this.filters[filterName];
+      if (typeof filter !== "function") {
         continue;
       }
 
-      if (tag.startsWith("if ")) {
-        const active = this.evaluateCondition(tag.slice(3), state.context);
-        state.ifStack.push(active);
-        state.state = active ? STATE_EMIT : STATE_SKIP;
+      const argumentsList = splitFilterArguments(rawArguments).map((argument) =>
+        unwrapHtmlValue(this.resolveExpression(argument, context, { applyFilters: false })),
+      );
+      value = filter(unwrapHtmlValue(value), ...argumentsList);
+    }
+
+    return value ?? EMPTY_STRING;
+  }
+
+  resolveValue(expression, context = {}) {
+    return this.resolveExpression(expression, context);
+  }
+
+  resolveArgument(expression, context = {}) {
+    return this.resolveExpression(expression, context, { applyFilters: false });
+  }
+
+  async renderPartial(partialExpression, handler, mode) {
+    const partial = parsePartialExpression(partialExpression);
+    const snippetValue = this.resolveArgument(partial.snippetExpression, handler.currentContext);
+    const snippetName = String(snippetValue ?? EMPTY_STRING);
+    const nextDepth = handler.renderDepth + 1;
+
+    if (nextDepth > 10) {
+      throw new Error("Max render depth exceeded");
+    }
+
+    const request = new Request(new URL(snippetName || EMPTY_STRING, "https://liquid.local/"));
+    const response = await this.fetch?.(request);
+    if (!response?.ok) {
+      return EMPTY_STRING;
+    }
+
+    const template = await response.text();
+    const scope = mode === "render"
+      ? createScope(null)
+      : createScope(handler.currentContext);
+
+    for (const argument of partial.argumentsList) {
+      scope[argument.name] = this.resolveValue(argument.valueExpression, handler.currentContext);
+    }
+
+    return await this.renderFragment(template, scope, handler.runtime, nextDepth);
+  }
+
+  evaluateCondition(condition, context = {}) {
+    const orParts = splitTopLevelKeyword(condition.trim(), "or");
+    if (orParts.length > 1) {
+      return orParts.some((part) => this.evaluateCondition(part, context));
+    }
+
+    const andParts = splitTopLevelKeyword(condition.trim(), "and");
+    if (andParts.length > 1) {
+      return andParts.every((part) => this.evaluateCondition(part, context));
+    }
+
+    const containsIndex = findTopLevelOperator(condition, " contains ");
+    if (containsIndex !== -1) {
+      const left = this.resolveComparisonValue(condition.slice(0, containsIndex).trim(), context);
+      const right = this.resolveComparisonValue(condition.slice(containsIndex + 10).trim(), context);
+      return Array.isArray(left) ? left.includes(right) : String(left ?? EMPTY_STRING).includes(String(right ?? EMPTY_STRING));
+    }
+
+    for (const operator of COMPARISON_OPERATORS) {
+      const index = findTopLevelOperator(condition, operator);
+      if (index === -1) {
         continue;
       }
 
-      if (tag.startsWith("for ")) {
-        const match = /^for\s+(\w+)\s+in\s+(.+)$/.exec(tag);
-        state.capture = {
-          mode: "for",
-          variable: match[1],
-          collection: this.resolveExpression(match[2], state.context),
-          parts: [],
-        };
-        state.state = STATE_CAPTURE;
-        continue;
+      const left = this.resolveComparisonValue(condition.slice(0, index).trim(), context);
+      const right = this.resolveComparisonValue(condition.slice(index + operator.length).trim(), context);
+
+      if (operator === "==") {
+        return left === right;
       }
 
-      if (tag === "endif") {
-        state.ifStack.pop();
-        state.state = state.ifStack.at(-1) === false ? STATE_SKIP : STATE_EMIT;
+      if (operator === "!=") {
+        return left !== right;
+      }
+
+      if (operator === ">=") {
+        return left >= right;
+      }
+
+      if (operator === "<=") {
+        return left <= right;
+      }
+
+      if (operator === ">") {
+        return left > right;
+      }
+
+      if (operator === "<") {
+        return left < right;
       }
     }
 
-    return output;
+    return isLiquidTruthy(this.resolveComparisonValue(condition.trim(), context));
   }
 
-  processSkipText(text, state) {
-    let index = 0;
+  resolveForCollection(loop, context = {}) {
+    const source = this.resolveValue(loop?.collectionPath, context);
+    let collection = Array.isArray(source)
+      ? [...source]
+      : typeof source === "string"
+        ? [...source]
+        : [];
 
-    while (index < text.length) {
-      const tagStart = text.indexOf("{%", index);
-      if (tagStart === -1) {
+    const offset = Number(loop?.offsetExpression ? this.resolveValue(loop.offsetExpression, context) : 0);
+    const limit = Number(loop?.limitExpression ? this.resolveValue(loop.limitExpression, context) : collection.length);
+
+    if (!Number.isNaN(offset) && offset > 0) {
+      collection = collection.slice(offset);
+    }
+
+    if (!Number.isNaN(limit) && limit >= 0) {
+      collection = collection.slice(0, limit);
+    }
+
+    if (loop?.reversed) {
+      collection.reverse();
+    }
+
+    return collection;
+  }
+
+  async processText(text, handler) {
+    if (handler.state === STATE_SKIP) {
+      return this.processSkipText(text, handler);
+    }
+
+    if (handler.state === STATE_RAW) {
+      return this.processRawText(text, handler);
+    }
+
+    if (handler.state === STATE_CAPTURE) {
+      return this.processCaptureText(text, handler);
+    }
+
+    return this.processEmitText(text, handler);
+  }
+
+  async processEmitText(text, handler) {
+    const output = [];
+    let cursor = 0;
+
+    while (cursor < text.length) {
+      const marker = getNextLiquidMarker(text, cursor);
+      if (marker === -1) {
+        output.push(text.slice(cursor));
         break;
       }
 
-      const end = text.indexOf("%}", tagStart);
-      const tag = text.slice(tagStart + 2, end).trim();
-      index = end + 2;
+      if (text.startsWith(VARIABLE_OPEN, marker)) {
+        const variable = readLiquidTag(text, marker, VARIABLE_OPEN, VARIABLE_CLOSE);
+        const leadingText = text.slice(cursor, marker);
+        output.push(variable?.trimLeft ? trimTrailingWhitespace(leadingText) : leadingText);
+        if (!variable) {
+          output.push(text.slice(marker));
+          break;
+        }
 
-      if (tag.startsWith("if ")) {
-        state.ifStack.push(false);
+        output.push(this.renderResolvedValue(this.resolveValue(variable.content, handler.currentContext)));
+        cursor = variable.trimRight ? skipLeadingWhitespace(text, variable.endIndex) : variable.endIndex;
         continue;
       }
 
-      if (tag === "endif") {
-        state.ifStack.pop();
-        state.state = state.ifStack.at(-1) === false ? STATE_SKIP : STATE_EMIT;
+      const block = readLiquidTag(text, marker, BLOCK_OPEN, BLOCK_CLOSE);
+      const leadingText = text.slice(cursor, marker);
+      output.push(block?.trimLeft ? trimTrailingWhitespace(leadingText) : leadingText);
+      if (!block) {
+        output.push(text.slice(marker));
+        break;
+      }
+
+      cursor = block.trimRight ? skipLeadingWhitespace(text, block.endIndex) : block.endIndex;
+
+      if (block.content.startsWith("if ") || block.content.startsWith("unless ")) {
+        const isUnless = block.content.startsWith("unless ");
+        const condition = isUnless ? block.content.slice(7).trim() : block.content.slice(3).trim();
+        const truthy = isUnless
+          ? !this.evaluateCondition(condition, handler.currentContext)
+          : this.evaluateCondition(condition, handler.currentContext);
+        const frame = createConditionalFrame(truthy, handler.currentContext);
+        handler.ifStack.push(frame);
+
+        if (!truthy) {
+          handler.state = STATE_SKIP;
+          handler.skipDepth = 1;
+          handler.skipMode = "if_false";
+          output.push(await this.processText(text.slice(cursor), handler));
+          return output.join(EMPTY_STRING);
+        }
+
+        handler.currentContext = frame.branchContext;
+        continue;
+      }
+
+      if (block.content.startsWith("case ")) {
+        handler.ifStack.push(
+          createCaseFrame(
+            this.resolveValue(block.content.slice(5).trim(), handler.currentContext),
+            handler.currentContext,
+          ),
+        );
+        handler.state = STATE_SKIP;
+        handler.skipDepth = 1;
+        handler.skipMode = "case_search";
+        output.push(await this.processText(text.slice(cursor), handler));
+        return output.join(EMPTY_STRING);
+      }
+
+      if (block.content.startsWith("assign ")) {
+        const assignment = parseAssignExpression(block.content);
+        if (assignment) {
+          handler.currentContext[assignment.variableName] = this.resolveValue(
+            assignment.valueExpression,
+            handler.currentContext,
+          );
+        }
+        continue;
+      }
+
+      if (block.content.startsWith("increment ") || block.content.startsWith("decrement ")) {
+        const counter = parseCounterExpression(block.content);
+        if (counter) {
+          const current = handler.runtime.counters[counter.variableName];
+
+          if (counter.operation === "increment") {
+            const outputValue = current === undefined ? 0 : current;
+            handler.runtime.counters[counter.variableName] = outputValue + 1;
+            output.push(String(outputValue));
+          } else {
+            const outputValue = current === undefined ? -1 : current - 1;
+            handler.runtime.counters[counter.variableName] = outputValue;
+            output.push(String(outputValue));
+          }
+        }
+        continue;
+      }
+
+      if (block.content.startsWith("when ")) {
+        const current = handler.ifStack.at(-1);
+        if (current?.type === "case" && current.matched) {
+          handler.state = STATE_SKIP;
+          handler.skipDepth = 1;
+          handler.skipMode = "case_done";
+          output.push(await this.processText(text.slice(cursor), handler));
+          return output.join(EMPTY_STRING);
+        }
+        continue;
+      }
+
+      if (block.content === "else") {
+        const current = handler.ifStack.at(-1);
+        if (current?.type === "case") {
+          if (current.matched) {
+            handler.state = STATE_SKIP;
+            handler.skipDepth = 1;
+            handler.skipMode = "case_done";
+            output.push(await this.processText(text.slice(cursor), handler));
+            return output.join(EMPTY_STRING);
+          }
+
+          current.matched = true;
+          current.branchContext = createScope(current.parentContext);
+          handler.currentContext = current.branchContext;
+          continue;
+        }
+
+        if (current?.truthy) {
+          handler.state = STATE_SKIP;
+          handler.skipDepth = 1;
+          handler.skipMode = "else_branch";
+          output.push(await this.processText(text.slice(cursor), handler));
+          return output.join(EMPTY_STRING);
+        }
+
+        if (current) {
+          handler.currentContext = current.branchContext;
+        }
+        continue;
+      }
+
+      if (block.content === "endcase") {
+        const frame = handler.ifStack.pop();
+        handler.currentContext = frame?.parentContext || handler.currentContext;
+        continue;
+      }
+
+      if (block.content === "endif") {
+        const frame = handler.ifStack.pop();
+        handler.currentContext = frame?.parentContext || handler.currentContext;
+        continue;
+      }
+
+      if (block.content.startsWith("for ")) {
+        const loop = parseForExpression(block.content);
+        const collection = loop ? this.resolveForCollection(loop, handler.currentContext) : [];
+
+        handler.state = STATE_CAPTURE;
+        handler.capture = createCaptureState("for", {
+          itemName: loop?.itemName || EMPTY_STRING,
+          collection,
+        });
+
+        output.push(await this.processText(text.slice(cursor), handler));
+        return output.join(EMPTY_STRING);
+      }
+
+      if (block.content.startsWith("capture ")) {
+        const capture = parseCaptureExpression(block.content);
+
+        handler.state = STATE_CAPTURE;
+        handler.capture = createCaptureState("capture", {
+          variableName: capture?.variableName || EMPTY_STRING,
+        });
+
+        output.push(await this.processText(text.slice(cursor), handler));
+        return output.join(EMPTY_STRING);
+      }
+
+      if (block.content === "raw") {
+        handler.state = STATE_RAW;
+        handler.raw = createRawState();
+        output.push(await this.processText(text.slice(cursor), handler));
+        return output.join(EMPTY_STRING);
+      }
+
+      if (block.content.startsWith("render ")) {
+        output.push(await this.renderPartial(block.content.slice(7).trim(), handler, "render"));
+        continue;
+      }
+
+      if (block.content.startsWith("include ")) {
+        output.push(await this.renderPartial(block.content.slice(8).trim(), handler, "include"));
+        continue;
+      }
+
+      const { name, expression } = parseTagInvocation(block.content);
+      const customTag = this.tags.get(name);
+      if (customTag) {
+        const tagResult = await customTag({
+          context: handler.currentContext,
+          engine: this,
+          expression,
+          markup: expression,
+          resolveArgument: (argument) => this.resolveExpression(argument, handler.currentContext, { applyFilters: false }),
+          resolveExpression: (argument, options = {}) => this.resolveExpression(argument, handler.currentContext, options),
+          state: handler,
+        });
+
+        if (tagResult && typeof tagResult === "object" && "output" in tagResult) {
+          output.push(
+            tagResult.html
+              ? String(tagResult.output ?? EMPTY_STRING)
+              : this.renderResolvedValue(tagResult.output),
+          );
+          continue;
+        }
+
+        output.push(String(tagResult ?? EMPTY_STRING));
+      }
+    }
+
+    return output.join(EMPTY_STRING);
+  }
+
+  processSkipText(text, handler) {
+    let cursor = 0;
+
+    while (cursor < text.length) {
+      const marker = text.indexOf(BLOCK_OPEN, cursor);
+      if (marker === -1) {
+        return EMPTY_STRING;
+      }
+
+      const block = readLiquidTag(text, marker, BLOCK_OPEN, BLOCK_CLOSE);
+      if (!block) {
+        return EMPTY_STRING;
+      }
+
+      cursor = block.endIndex;
+
+      if (
+        block.content.startsWith("if ") ||
+        block.content.startsWith("unless ") ||
+        block.content.startsWith("case ")
+      ) {
+        handler.skipDepth += 1;
+        continue;
+      }
+
+      if (
+        block.content.startsWith("when ") &&
+        handler.skipDepth === 1 &&
+        handler.skipMode === "case_search"
+      ) {
+        const frame = handler.ifStack.at(-1);
+        if (
+          frame?.type === "case" &&
+          !frame.matched &&
+          evaluateWhenMatch(this, block.content.slice(5).trim(), frame.switchValue, handler.currentContext)
+        ) {
+          frame.matched = true;
+          frame.branchContext = createScope(frame.parentContext);
+          handler.currentContext = frame.branchContext;
+          handler.state = STATE_EMIT;
+          handler.skipDepth = 0;
+          handler.skipMode = null;
+          return this.processEmitText(text.slice(block.trimRight ? skipLeadingWhitespace(text, cursor) : cursor), handler);
+        }
+        continue;
+      }
+
+      if (block.content === "else" && handler.skipDepth === 1 && handler.skipMode === "if_false") {
+        handler.state = STATE_EMIT;
+        handler.skipDepth = 0;
+        handler.skipMode = null;
+        const frame = handler.ifStack.at(-1);
+        handler.currentContext = frame?.branchContext || handler.currentContext;
+        return this.processEmitText(text.slice(block.trimRight ? skipLeadingWhitespace(text, cursor) : cursor), handler);
+      }
+
+      if (block.content === "else" && handler.skipDepth === 1 && handler.skipMode === "case_search") {
+        const frame = handler.ifStack.at(-1);
+        if (frame?.type === "case" && !frame.matched) {
+          frame.matched = true;
+          frame.branchContext = createScope(frame.parentContext);
+          handler.currentContext = frame.branchContext;
+          handler.state = STATE_EMIT;
+          handler.skipDepth = 0;
+          handler.skipMode = null;
+          return this.processEmitText(text.slice(block.trimRight ? skipLeadingWhitespace(text, cursor) : cursor), handler);
+        }
+        continue;
+      }
+
+      if (block.content === "endif") {
+        handler.skipDepth -= 1;
+
+        if (handler.skipDepth === 0) {
+          const frame = handler.ifStack.pop();
+          handler.currentContext = frame?.parentContext || handler.currentContext;
+          handler.state = STATE_EMIT;
+          handler.skipMode = null;
+          return this.processEmitText(text.slice(block.trimRight ? skipLeadingWhitespace(text, cursor) : cursor), handler);
+        }
+      }
+
+      if (block.content === "endcase") {
+        handler.skipDepth -= 1;
+
+        if (handler.skipDepth === 0) {
+          const frame = handler.ifStack.pop();
+          handler.currentContext = frame?.parentContext || handler.currentContext;
+          handler.state = STATE_EMIT;
+          handler.skipMode = null;
+          return this.processEmitText(text.slice(block.trimRight ? skipLeadingWhitespace(text, cursor) : cursor), handler);
+        }
       }
     }
 
     return EMPTY_STRING;
   }
 
-  async processCaptureText(text, state) {
-    const endTag = state.capture.mode === "for" ? "{% endfor %}" : "{% endcapture %}";
-    const endIndex = text.indexOf(endTag);
+  async processRawText(text, handler) {
+    let cursor = 0;
 
-    if (endIndex === -1) {
-      state.capture.parts.push(text);
+    while (cursor < text.length) {
+      const marker = text.indexOf(BLOCK_OPEN, cursor);
+      if (marker === -1) {
+        appendRawPart(handler.raw, text.slice(cursor));
+        return EMPTY_STRING;
+      }
+
+      appendRawPart(handler.raw, text.slice(cursor, marker));
+      const block = readLiquidTag(text, marker, BLOCK_OPEN, BLOCK_CLOSE);
+      if (!block) {
+        appendRawPart(handler.raw, text.slice(marker));
+        return EMPTY_STRING;
+      }
+
+      cursor = block.endIndex;
+
+      if (block.content === "endraw") {
+        const rawContent = handler.raw.bufferParts.join(EMPTY_STRING);
+        handler.state = STATE_EMIT;
+        handler.raw = null;
+        return rawContent + await this.processEmitText(
+          text.slice(block.trimRight ? skipLeadingWhitespace(text, cursor) : cursor),
+          handler,
+        );
+      }
+
+      appendRawPart(handler.raw, block.raw);
+    }
+
+    return EMPTY_STRING;
+  }
+
+  async processCaptureText(text, handler) {
+    let cursor = 0;
+
+    while (cursor < text.length) {
+      const marker = text.indexOf(BLOCK_OPEN, cursor);
+      if (marker === -1) {
+        appendCapturePart(handler.capture, text.slice(cursor));
+        return EMPTY_STRING;
+      }
+
+      appendCapturePart(handler.capture, text.slice(cursor, marker));
+      const block = readLiquidTag(text, marker, BLOCK_OPEN, BLOCK_CLOSE);
+      if (!block) {
+        appendCapturePart(handler.capture, text.slice(marker));
+        return EMPTY_STRING;
+      }
+
+      cursor = block.endIndex;
+
+      if (
+        (handler.capture.mode === "for" && block.content.startsWith("for ")) ||
+        (handler.capture.mode === "capture" && block.content.startsWith("capture "))
+      ) {
+        handler.capture.depth += 1;
+        appendCapturePart(handler.capture, block.raw);
+        continue;
+      }
+
+      if (
+        (handler.capture.mode === "for" && block.content === "endfor") ||
+        (handler.capture.mode === "capture" && block.content === "endcapture")
+      ) {
+        if (handler.capture.depth > 0) {
+          handler.capture.depth -= 1;
+          appendCapturePart(handler.capture, block.raw);
+          continue;
+        }
+
+        const rendered = await this.renderCapture(handler);
+        handler.state = STATE_EMIT;
+        handler.capture = null;
+        return rendered + await this.processEmitText(text.slice(cursor), handler);
+      }
+
+      appendCapturePart(handler.capture, block.raw);
+    }
+
+    return EMPTY_STRING;
+  }
+
+  async renderCapture(handler) {
+    const fragment = handler.capture.bufferParts.join(EMPTY_STRING);
+
+    if (handler.capture.mode === "capture") {
+      handler.currentContext[handler.capture.variableName] = await this.renderFragment(
+        fragment,
+        createScope(handler.currentContext),
+        handler.runtime,
+        handler.renderDepth,
+      );
       return EMPTY_STRING;
     }
 
-    state.capture.parts.push(text.slice(0, endIndex));
-    const rendered = await this.renderCapture(state);
-    state.capture = null;
-    state.state = STATE_EMIT;
-
-    return rendered + this.processText(text.slice(endIndex + endTag.length), state);
-  }
-
-  async renderCapture(state) {
-    const template = state.capture.parts.join(EMPTY_STRING);
-    const collection = Array.isArray(state.capture.collection)
-      ? state.capture.collection
-      : [];
     const output = [];
+    const length = handler.capture.collection.length;
 
-    for (let index = 0; index < collection.length; index += 1) {
-      if (index > 0 && index % this.yieldAfter === 0) {
+    for (let index = 0; index < length; index += 1) {
+      if (this.yieldAfter > 0 && index > 0 && index % this.yieldAfter === 0) {
         await this.yieldControl();
       }
 
-      const scope = this.createScope(state.context);
-      scope[state.capture.variable] = collection[index];
-      output.push(await this.renderFragment(template, scope));
+      const item = handler.capture.collection[index];
+      const loopScope = createScope(handler.currentContext);
+      loopScope[handler.capture.itemName] = item;
+      loopScope.forloop = createLoopMetadata(index, length);
+      output.push(await this.renderFragment(fragment, loopScope, handler.runtime, handler.renderDepth));
     }
 
     return output.join(EMPTY_STRING);
   }
 
-  processText(text, state) {
-    if (state.state === STATE_SKIP) {
-      return this.processSkipText(text, state);
-    }
-
-    if (state.state === STATE_CAPTURE) {
-      return this.processCaptureText(text, state);
-    }
-
-    return this.processEmitText(text, state);
-  }
-
-  createHandler(state) {
-    return {
-      text: async (textNode) => {
-        state.textBuffer.push(textNode.text);
-
-        if (!textNode.lastInTextNode) {
-          textNode.remove();
-          return;
-        }
-
-        const nextText = state.textBuffer.join(EMPTY_STRING);
-        state.textBuffer.length = 0;
-        textNode.replace(await this.processText(nextText, state));
-      },
-    };
-  }
-
-  async renderFragment(template, context = {}) {
-    return this.parseAndRender(template, context);
-  }
-
-  async parseAndRender(template, context = {}) {
-    const state = this.createState(context);
-    const response = new Response(String(template));
-    const rewritten = new this.HTMLRewriterClass()
-      .on("*", this.createHandler(state))
-      .transform(response);
-
-    return rewritten.text();
+  async renderFragment(fragment, context = {}, runtime = createRuntime(), renderDepth = 0) {
+    const handler = createHandlerState(createScope(context), {
+      runtime,
+      renderDepth,
+    });
+    return await this.processText(fragment, handler);
   }
 }
+
+export const __private__ = {
+  isLiquidTruthy,
+  resolvePathValue,
+  splitTopLevel,
+};
+
+export default Liquid;

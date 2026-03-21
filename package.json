@@ -1,15 +1,37 @@
 {
   "name": "@sntran/liquid-html-rewriter",
   "version": "0.1.0",
+  "description": "A lightweight Liquid subset renderer built on HTMLRewriter for Cloudflare Workers and Node.js.",
   "type": "module",
   "main": "./src/index.js",
   "exports": {
     ".": "./src/index.js"
   },
+  "files": [
+    "src",
+    "README.md"
+  ],
   "scripts": {
-    "test": "node --test test/checkpoint.test.js"
+    "test": "node scripts/run-tests.mjs",
+    "coverage": "c8 --reporter=text --include=src/index.js node scripts/run-tests.mjs",
+    "benchmark": "node --expose-gc --experimental-wasm-jspi scripts/benchmark-liquid.mjs"
+  },
+  "keywords": [
+    "liquid",
+    "htmlrewriter",
+    "cloudflare-workers",
+    "streaming",
+    "template-engine"
+  ],
+  "engines": {
+    "node": ">=20"
   },
   "dependencies": {
-    "@sntran/html-rewriter": "^0.0.9"
+    "@sntran/html-rewriter": "github:sntran/html-rewriter"
+  },
+  "devDependencies": {
+    "c8": "^11.0.0",
+    "fast-check": "^4.6.0",
+    "liquidjs": "^10.25.0"
   }
 }
