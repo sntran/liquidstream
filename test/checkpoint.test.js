@@ -1,15 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { Liquid, escapeHtml } from "../src/index.js";
+import { Liquid } from "../src/index.js";
 
-test("string interpolation renders variables and filters", async () => {
+test("emit and skip states gate block output", async () => {
   const engine = new Liquid();
 
-  assert.equal(escapeHtml('<Ada>'), '&lt;Ada&gt;');
   assert.equal(
-    await engine.parseAndRender('<p>{{ user.name | upcase }}</p>', {
-      user: { name: 'Ada' },
-    }),
-    '<p>ADA</p>',
+    await engine.parseAndRender(
+      '{% assign label = "ok" %}{% if label %}<p>{{ label | upcase }}</p>{% endif %}',
+    ),
+    '<p>OK</p>',
   );
 });

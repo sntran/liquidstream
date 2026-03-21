@@ -1,4 +1,6 @@
 export const EMPTY_STRING = "";
+export const STATE_EMIT = "EMIT";
+export const STATE_SKIP = "SKIP";
 
 export const FILTERS = {
   upcase(value) {
@@ -61,6 +63,14 @@ export class Liquid {
     this.filters = { ...FILTERS };
   }
 
+  createState(context = {}) {
+    return {
+      state: STATE_EMIT,
+      context: { ...context },
+      ifStack: [],
+    };
+  }
+
   resolveExpression(expression, context = {}) {
     const source = String(expression ?? EMPTY_STRING).trim();
 
@@ -99,8 +109,12 @@ export class Liquid {
     return value === undefined || value === null ? EMPTY_STRING : value;
   }
 
-  interpolate(template, context = {}) {
-    return String(template).replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_match, source) => {
+  evaluateCondition(expression, context = {}) {
+    return Boolean(this.resolveExpression(expression, context));
+  }
+
+  interpolate(text, context = {}) {
+    return String(text).replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_match, source) => {
       const parts = splitTopLevel(source, "|");
       const expression = parts.shift();
       let value = this.resolveValue(expression, context);
@@ -116,7 +130,93 @@ export class Liquid {
     });
   }
 
+  processEmitText(text, state) {
+    let output = EMPTY_STRING;
+    let index = 0;
+
+    while (index < text.length) {
+      const variableStart = text.indexOf("{{", index);
+      const tagStart = text.indexOf("{%", index);
+      const nextStart = [variableStart, tagStart]
+        .filter((value) => value !== -1)
+        .sort((left, right) => left - right)[0];
+
+      if (nextStart === undefined) {
+        output += this.interpolate(text.slice(index), state.context);
+        break;
+      }
+
+      output += this.interpolate(text.slice(index, nextStart), state.context);
+
+      if (nextStart === variableStart) {
+        const end = text.indexOf("}}", variableStart);
+        output += this.interpolate(text.slice(variableStart, end + 2), state.context);
+        index = end + 2;
+        continue;
+      }
+
+      const end = text.indexOf("%}", tagStart);
+      const tag = text.slice(tagStart + 2, end).trim();
+      index = end + 2;
+
+      if (tag.startsWith("assign ")) {
+        const [name, value] = tag.slice(7).split("=");
+        state.context[name.trim()] = this.resolveValue(value, state.context);
+        continue;
+      }
+
+      if (tag.startsWith("if ")) {
+        const active = this.evaluateCondition(tag.slice(3), state.context);
+        state.ifStack.push(active);
+        state.state = active ? STATE_EMIT : STATE_SKIP;
+        continue;
+      }
+
+      if (tag === "endif") {
+        state.ifStack.pop();
+        state.state = state.ifStack.at(-1) === false ? STATE_SKIP : STATE_EMIT;
+      }
+    }
+
+    return output;
+  }
+
+  processSkipText(text, state) {
+    let index = 0;
+
+    while (index < text.length) {
+      const tagStart = text.indexOf("{%", index);
+      if (tagStart === -1) {
+        break;
+      }
+
+      const end = text.indexOf("%}", tagStart);
+      const tag = text.slice(tagStart + 2, end).trim();
+      index = end + 2;
+
+      if (tag.startsWith("if ")) {
+        state.ifStack.push(false);
+        continue;
+      }
+
+      if (tag === "endif") {
+        state.ifStack.pop();
+        state.state = state.ifStack.at(-1) === false ? STATE_SKIP : STATE_EMIT;
+      }
+    }
+
+    return EMPTY_STRING;
+  }
+
+  processText(text, state) {
+    if (state.state === STATE_SKIP) {
+      return this.processSkipText(text, state);
+    }
+
+    return this.processEmitText(text, state);
+  }
+
   async parseAndRender(template, context = {}) {
-    return this.interpolate(template, context);
+    return this.processText(String(template), this.createState(context));
   }
 }

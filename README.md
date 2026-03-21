@@ -1,4 +1,4 @@
 # @sntran/liquid-html-rewriter
 
-This checkpoint adds the first end-to-end renderer with string-based
-interpolation and a tiny filter library.
+This checkpoint introduces the first emit and skip states so block logic
+can control which text is rendered.
