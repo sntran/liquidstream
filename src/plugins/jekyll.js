@@ -1,3 +1,5 @@
+import path from "node:path";
+
 const EMPTY_STRING = "";
 
 function resolvePathValue(value, segment) {
@@ -44,23 +46,12 @@ function slugify(value) {
     .replaceAll(/^-+|-+$/g, EMPTY_STRING);
 }
 
-function normalizeUrlPart(value = EMPTY_STRING) {
-  const string = String(value ?? EMPTY_STRING).trim();
-  if (!string || string === "/") {
-    return EMPTY_STRING;
-  }
+function joinUrlPath(base = EMPTY_STRING, value = EMPTY_STRING) {
+  const pathname = String(value ?? EMPTY_STRING).trim();
+  const hasTrailingSlash = pathname.length > 1 && pathname.endsWith("/");
+  const joined = path.posix.join("/", String(base ?? EMPTY_STRING).trim(), pathname);
 
-  return `/${string.replaceAll(/^\/+|\/+$/g, EMPTY_STRING)}`;
-}
-
-function joinUrlParts(base, path) {
-  const normalizedBase = normalizeUrlPart(base);
-  const stringPath = String(path ?? EMPTY_STRING).trim();
-  const hasTrailingSlash = stringPath.length > 1 && stringPath.endsWith("/");
-  const normalizedPath = normalizeUrlPart(stringPath);
-  const combined = `${normalizedBase}${normalizedPath}` || "/";
-
-  return hasTrailingSlash && combined !== "/" ? `${combined}/` : combined;
+  return hasTrailingSlash && joined !== "/" && !joined.endsWith("/") ? `${joined}/` : joined;
 }
 
 function buildRelativeUrl(value, site = {}) {
@@ -68,7 +59,7 @@ function buildRelativeUrl(value, site = {}) {
     return EMPTY_STRING;
   }
 
-  return joinUrlParts(site.baseurl, value);
+  return joinUrlPath(site.baseurl, value);
 }
 
 function buildAbsoluteUrl(value, site = {}) {

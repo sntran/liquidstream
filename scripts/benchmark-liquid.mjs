@@ -167,7 +167,7 @@ const heavyContext = { items: loopItems };
 
 const bundleSources = await Promise.all([
   readFile(new URL("../src/index.js", import.meta.url)),
-  readFile(new URL("../../../node_modules/liquidjs/dist/liquid.browser.mjs", import.meta.url)),
+  readFile(new URL("../node_modules/liquidjs/dist/liquid.browser.mjs", import.meta.url)),
 ]);
 
 const [workerSource, liquidjsSource] = bundleSources;

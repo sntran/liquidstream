@@ -23,13 +23,13 @@ That gives it a practical advantage over string-only engines: it can start sendi
 
 Benchmark snapshot from this repository:
 
-- gzipped engine size: `9006 B`
-- first byte, `liquidstream`: `2.503 ms`
-- first byte, `liquidjs`: `39.276 ms`
-- heavy 1 MB render, `liquidstream`: `32.757 ms`
-- heavy 1 MB render, `liquidjs`: `38.483 ms`
+- gzipped engine size: `9075 B`
+- first byte, `liquidstream`: `2.613 ms`
+- first byte, `liquidjs`: `36.707 ms`
+- heavy 1 MB render, `liquidstream`: `30.534 ms`
+- heavy 1 MB render, `liquidjs`: `44.942 ms`
 
-Those numbers come from [scripts/benchmark-liquid.mjs](/home/esente/Projects/sntran/sntran.com/scripts/benchmark-liquid.mjs). Tiny full-string renders can still be faster in `liquidjs`, but `liquidstream` is designed to win where streaming and Worker behavior matter more than small-template throughput.
+Those numbers come from [scripts/benchmark-liquid.mjs](/home/esente/Projects/sntran/liquidstream/scripts/benchmark-liquid.mjs). Tiny full-string renders can still be faster in `liquidjs`, but `liquidstream` is designed to win where streaming and Worker behavior matter more than small-template throughput.
 
 ## Drop-in Compatibility
 
