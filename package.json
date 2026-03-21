@@ -1,0 +1,12 @@
+{
+  "name": "@sntran/liquid-html-rewriter",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "scripts": {
+    "test": "node --test test/checkpoint.test.js"
+  }
+}
