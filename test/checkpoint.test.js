@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Liquid } from "../src/index.js";
 
-test("shared filters can be extended per instance", async () => {
+test("large loops can yield between batches", async () => {
   class FakeTextNode {
     constructor(text) {
       this.text = text;
@@ -32,17 +32,20 @@ test("shared filters can be extended per instance", async () => {
     }
   }
 
-  const engine = new Liquid({ HTMLRewriterClass: FakeHTMLRewriter });
-  engine.registerFilter('surround', (value) => `[${value}]`);
+  let yields = 0;
+  const engine = new Liquid({
+    HTMLRewriterClass: FakeHTMLRewriter,
+    yieldAfter: 2,
+    yieldControl: async () => {
+      yields += 1;
+    },
+  });
 
   assert.equal(
-    await engine.parseAndRender('{{ word | downcase | capitalize | default: "x" }}', {
-      word: 'HELLO',
+    await engine.parseAndRender('{% for i in list %}{{ i }}{% endfor %}', {
+      list: [1, 2, 3, 4, 5],
     }),
-    'hello',
+    '12345',
   );
-  assert.equal(
-    await engine.parseAndRender('{{ word | surround }}', { word: 'Ada' }),
-    '[Ada]',
-  );
+  assert.equal(yields, 2);
 });

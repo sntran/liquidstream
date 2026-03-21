@@ -12,6 +12,10 @@ export const FILTERS = {
   downcase(value) {
     return String(value ?? EMPTY_STRING).toLowerCase();
   },
+  capitalize(value) {
+    const text = String(value ?? EMPTY_STRING);
+    return text ? `${text[0].toUpperCase()}${text.slice(1).toLowerCase()}` : text;
+  },
   default(value, fallback = EMPTY_STRING) {
     return value === undefined || value === null || value === EMPTY_STRING
       ? fallback
@@ -66,10 +70,16 @@ export function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
+export async function defaultYieldControl() {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 export class Liquid {
   constructor(options = {}) {
     this.filters = Object.assign(Object.create(FILTERS), options.filters || {});
     this.HTMLRewriterClass = options.HTMLRewriterClass || HTMLRewriter;
+    this.yieldAfter = options.yieldAfter || 100;
+    this.yieldControl = options.yieldControl || defaultYieldControl;
   }
 
   registerFilter(name, filter) {
@@ -268,9 +278,13 @@ export class Liquid {
       : [];
     const output = [];
 
-    for (const item of collection) {
+    for (let index = 0; index < collection.length; index += 1) {
+      if (index > 0 && index % this.yieldAfter === 0) {
+        await this.yieldControl();
+      }
+
       const scope = this.createScope(state.context);
-      scope[state.capture.variable] = item;
+      scope[state.capture.variable] = collection[index];
       output.push(await this.renderFragment(template, scope));
     }
 

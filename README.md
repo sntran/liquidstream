@@ -1,4 +1,4 @@
 # @sntran/liquid-html-rewriter
 
-This checkpoint moves the default filters into a shared prototype-backed
-library and adds runtime registration.
+This checkpoint adds cooperative yielding so large loop renders can back
+off before the final production feature set lands.
