@@ -213,6 +213,17 @@ describe("Liquid Standard Filters", () => {
     assert.equal(replaced, "Hello, World. World!");
   });
 
+  it("supports extra native-backed string filters", async () => {
+    const engine = new Liquid();
+
+    const html = await engine.parseAndRender(
+      '{{ "  hello  " | trim_start | trim_end | starts_with: "he" }}|{{ "liquid" | ends_with: "id" }}|{{ "stream" | includes: "rea" }}',
+      {},
+    );
+
+    assert.equal(html, "true|true|true");
+  });
+
   it("supports size on arrays and strings", async () => {
     const engine = new Liquid();
 
@@ -293,7 +304,7 @@ describe("Liquid Standard Filters", () => {
       text: "a\nb",
     });
     const numeric = await engine.parseAndRender(
-      "{{ -2.2 | abs }}|{{ 2 | at_least: 5 }}|{{ 8 | at_most: 3 }}|{{ 2.1 | ceil }}|{{ 2.9 | floor }}|{{ 2.49 | round }}|{{ 2.51 | round }}",
+      "{{ -2.2 | abs }}|{{ 2 | at_least: 5 }}|{{ 8 | at_most: 3 }}|{{ 2.1 | ceil }}|{{ 2.9 | floor }}|{{ 2.49 | round }}|{{ 2.51 | round }}|{{ -2.9 | trunc }}|{{ 9 | sqrt }}|{{ -3 | sign }}",
       {},
     );
     const encoded = await engine.parseAndRender('{{ "a b&c" | url_encode }}', {});
@@ -301,7 +312,7 @@ describe("Liquid Standard Filters", () => {
 
     assert.equal(stripped, "Hello");
     assert.equal(breaks, "a<br />b");
-    assert.equal(numeric, "2.2|5|3|3|2|2|3");
+    assert.equal(numeric, "2.2|5|3|3|2|2|3|-2|3|-1");
     assert.equal(encoded, "a%20b%26c");
     assert.equal(decoded, "a b&amp;c");
   });

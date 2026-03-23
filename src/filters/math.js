@@ -1,34 +1,30 @@
-export function abs(value) {
+function toNumber(value) {
   const number = Number(value);
-  return Number.isNaN(number) ? 0 : Math.abs(number);
+  return Number.isNaN(number) ? 0 : number;
 }
 
+function mathMethod(methodName) {
+  return (value) => Math[methodName](toNumber(value));
+}
+
+export const abs = mathMethod("abs");
+
 export function at_least(value, minimum) {
-  const current = Number(value);
-  const floor = Number(minimum);
-  return Number.isNaN(current) || Number.isNaN(floor) ? 0 : Math.max(current, floor);
+  return Math.max(toNumber(value), toNumber(minimum));
 }
 
 export function at_most(value, maximum) {
-  const current = Number(value);
-  const ceiling = Number(maximum);
-  return Number.isNaN(current) || Number.isNaN(ceiling) ? 0 : Math.min(current, ceiling);
+  return Math.min(toNumber(value), toNumber(maximum));
 }
 
-export function ceil(value) {
-  const number = Number(value);
-  return Number.isNaN(number) ? 0 : Math.ceil(number);
-}
+export const ceil = mathMethod("ceil");
 
-export function floor(value) {
-  const number = Number(value);
-  return Number.isNaN(number) ? 0 : Math.floor(number);
-}
+export const floor = mathMethod("floor");
 
 export function round(value, precision = 0) {
-  const number = Number(value);
+  const number = toNumber(value);
   const digits = Number(precision);
-  if (Number.isNaN(number) || Number.isNaN(digits)) {
+  if (Number.isNaN(digits)) {
     return 0;
   }
 
@@ -37,9 +33,9 @@ export function round(value, precision = 0) {
 }
 
 export function divided_by(value, divisor) {
-  const number = Number(value);
+  const number = toNumber(value);
   const denominator = Number(divisor);
-  if (Number.isNaN(number) || Number.isNaN(denominator) || denominator === 0) {
+  if (Number.isNaN(denominator) || denominator === 0) {
     return 0;
   }
 
@@ -47,11 +43,11 @@ export function divided_by(value, divisor) {
 }
 
 export function minus(value, amount = 0) {
-  const number = Number(value);
-  const delta = Number(amount);
-  if (Number.isNaN(number) || Number.isNaN(delta)) {
-    return 0;
-  }
-
-  return number - delta;
+  return toNumber(value) - toNumber(amount);
 }
+
+export const trunc = mathMethod("trunc");
+
+export const sqrt = mathMethod("sqrt");
+
+export const sign = mathMethod("sign");
