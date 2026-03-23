@@ -270,6 +270,20 @@ describe("Liquid Standard Filters", () => {
     assert.equal(html, "custom:hello");
   });
 
+  it("allows constructor overrides for built-in filter names without throwing during setup", async () => {
+    const engine = new Liquid({
+      filters: {
+        relative_url(value) {
+          return `custom:${value}`;
+        },
+      },
+    });
+
+    const html = await engine.parseAndRender('{{ "/docs" | relative_url }}', {});
+
+    assert.equal(html, "custom:/docs");
+  });
+
   it("supports adding new filters via registerFilter alongside standard filters", async () => {
     const engine = new Liquid();
     engine.registerFilter("surround", (value, left = "[", right = "]") => `${left}${value}${right}`);

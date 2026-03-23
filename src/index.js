@@ -1,5 +1,5 @@
 import { HTMLRewriter as DefaultHTMLRewriter } from "@sntran/html-rewriter";
-import * as FILTERS from "./filters/index.js";
+import * as filters from "./filters/index.js";
 
 const STATE_EMIT = "EMIT";
 const STATE_SKIP = "SKIP";
@@ -17,6 +17,7 @@ const HTML_VALUE = "_h";
 const WHITESPACE_CHARACTERS = new Set([" ", "\n", "\r", "\t", "\f"]);
 const COMPARISON_OPERATORS = [">=", "<=", "!=", "==", ">", "<"];
 const NAME_PATTERN = /^\w+$/;
+const FILTERS = { ...filters };
 
 function escapeHtml(value = EMPTY_STRING) {
   return value
