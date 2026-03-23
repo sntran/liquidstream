@@ -643,20 +643,12 @@ export class Liquid {
           return;
         }
 
-        const shouldSerializeAttributes = await this.interpolateAttributes(
+        await this.interpolateAttributes(
           element,
           handler.currentContext,
           handler.runtime,
           handler.renderDepth,
         );
-        if (shouldSerializeAttributes) {
-          element.before(serializeStartTag(element), { html: true });
-          element.onEndTag((endTag) => {
-            endTag.before(serializeEndTag(endTag.name), { html: true });
-            endTag.remove();
-          });
-          element.removeAndKeepContent();
-        }
       },
 
       text: async (chunk) => {
@@ -722,7 +714,6 @@ export class Liquid {
   }
 
   async interpolateAttributes(element, context = {}, runtime = createRuntime(), renderDepth = 0) {
-    let shouldSerializeAttributes = false;
     const attributes = [...element.attributes];
 
     for (const [name, value] of attributes) {
@@ -730,11 +721,8 @@ export class Liquid {
         continue;
       }
 
-      shouldSerializeAttributes = true;
       element.setAttribute(name, await this.renderFragment(value, context, runtime, renderDepth));
     }
-
-    return shouldSerializeAttributes;
   }
 
   parseLiteralExpression(expression, context = {}) {

@@ -412,7 +412,7 @@ describe("Liquid Streaming State Machine", () => {
     assert.equal(html, '<div data-id="7"></div>');
   });
 
-  it("minimizes falsey interpolated attributes", async () => {
+  it("renders falsey interpolated attributes with native serializer output", async () => {
     const engine = new Liquid();
 
     const disabled = await engine.parseAndRender(
@@ -428,8 +428,8 @@ describe("Liquid Streaming State Machine", () => {
       { alt_text: "Photo" },
     );
 
-    assert.equal(disabled, "<input disabled>");
-    assert.equal(className, "<div class></div>");
+    assert.equal(disabled, '<input disabled="">');
+    assert.equal(className, '<div class=""></div>');
     assert.equal(image, '<img alt="Photo">');
   });
 
@@ -449,6 +449,42 @@ describe("Liquid Streaming State Machine", () => {
     });
 
     assert.equal(setCalls, 0);
+  });
+
+  it("does not serialize elements when interpolated attributes can be handled natively", async () => {
+    const engine = new Liquid();
+    const handler = engine.createHandler({ page: {}, site: { description: "Site desc" } });
+    const attributes = [["content", "{{ page.description | default: site.description }}"]];
+    let setValue = "";
+    let beforeCalls = 0;
+    let removedContent = false;
+
+    await handler.element({
+      tagName: "meta",
+      attributes,
+      before() {
+        beforeCalls += 1;
+      },
+      onEndTag() {
+        throw new Error("should not register end tag for native attribute handling");
+      },
+      removeAndKeepContent() {
+        removedContent = true;
+      },
+      setAttribute(name, value) {
+        const index = attributes.findIndex(([attributeName]) => attributeName === name);
+        if (index !== -1) {
+          attributes[index] = [name, value];
+        }
+        if (name === "content") {
+          setValue = value;
+        }
+      },
+    });
+
+    assert.equal(setValue, "Site desc");
+    assert.equal(beforeCalls, 0);
+    assert.equal(removedContent, false);
   });
 
   it("exposes interpolate for direct variable rendering", () => {
