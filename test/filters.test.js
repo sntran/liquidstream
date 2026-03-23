@@ -197,6 +197,22 @@ describe("Liquid Standard Filters", () => {
     assert.equal(emptyJoin, "");
   });
 
+  it("supports generic string splitting and replacement", async () => {
+    const engine = new Liquid();
+
+    const split = await engine.parseAndRender(
+      '{{ "red--green--blue" | split: "--" | join: "," }}',
+      {},
+    );
+    const replaced = await engine.parseAndRender(
+      '{{ "Hello, NAME. NAME!" | replace: "NAME", "World" }}',
+      {},
+    );
+
+    assert.equal(split, "red,green,blue");
+    assert.equal(replaced, "Hello, World. World!");
+  });
+
   it("supports size on arrays and strings", async () => {
     const engine = new Liquid();
 
@@ -288,5 +304,19 @@ describe("Liquid Standard Filters", () => {
     assert.equal(numeric, "2.2|5|3|3|2|2|3");
     assert.equal(encoded, "a%20b%26c");
     assert.equal(decoded, "a b&amp;c");
+  });
+
+  it('supports the "raw" filter when auto-escaping is enabled', async () => {
+    const engine = new Liquid();
+
+    const escaped = await engine.parseAndRender("{{ html }}", {
+      html: "<strong>safe</strong>",
+    });
+    const raw = await engine.parseAndRender("{{ html | raw }}", {
+      html: "<strong>safe</strong>",
+    });
+
+    assert.equal(escaped, "&lt;strong&gt;safe&lt;/strong&gt;");
+    assert.equal(raw, "<strong>safe</strong>");
   });
 });

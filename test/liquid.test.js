@@ -188,6 +188,25 @@ describe("Liquid Streaming State Machine", () => {
     assert.equal(block, "ABC");
   });
 
+  it("interpolates multiple attributes without mutating the iterator during traversal", async () => {
+    const engine = new Liquid();
+
+    const html = await engine.parseAndRender(
+      '<section data-title="{{ page.title }}" aria-label="{{ page.label }}"><span>ok</span></section>',
+      {
+        page: {
+          title: "Laminar Flow",
+          label: "Docs shell",
+        },
+      },
+    );
+
+    assert.equal(
+      html,
+      '<section data-title="Laminar Flow" aria-label="Docs shell"><span>ok</span></section>',
+    );
+  });
+
   it("renders loop variables with loop scope", async () => {
     const engine = new Liquid();
 
@@ -232,6 +251,28 @@ describe("Liquid Streaming State Machine", () => {
     );
 
     assert.equal(html, "fallback");
+  });
+
+  it('supports the "minus" filter for footer timing math', async () => {
+    const engine = new Liquid();
+
+    const html = await engine.parseAndRender(
+      '{{ "1700000000123" | minus: 1700000000000 | append: "ms" }}',
+      {},
+    );
+
+    assert.equal(html, "123ms");
+  });
+
+  it('supports the "date" filter tokens %s and %L', async () => {
+    const engine = new Liquid();
+
+    const html = await engine.parseAndRender(
+      '{{ "2026-03-21T10:11:12.345Z" | date: "%s%L" }}',
+      {},
+    );
+
+    assert.equal(html, "1774087872345");
   });
 
   it("keeps quoted filter arguments intact", async () => {

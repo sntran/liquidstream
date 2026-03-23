@@ -1,11 +1,11 @@
 import { HTMLRewriter as DefaultHTMLRewriter } from "@sntran/html-rewriter";
+import * as FILTERS from "./filters/index.js";
 
 const STATE_EMIT = "EMIT";
 const STATE_SKIP = "SKIP";
 const STATE_CAPTURE = "CAPTURE";
 const STATE_RAW = "RAW";
 
-const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const NUMBER_PATTERN = /^-?\d+(?:\.\d+)?$/;
 const RANGE_PATTERN = /^\((.+)\.\.(.+)\)$/;
 const VARIABLE_OPEN = "{{";
@@ -16,13 +16,6 @@ const EMPTY_STRING = "";
 const HTML_VALUE = "_h";
 const WHITESPACE_CHARACTERS = new Set([" ", "\n", "\r", "\t", "\f"]);
 const COMPARISON_OPERATORS = [">=", "<=", "!=", "==", ">", "<"];
-const DATE_TOKENS = /%[YmdHMSbBaA]/g;
-const DATE_FORMATTERS = {
-  "%b": new Intl.DateTimeFormat("en-US", { month: "short", timeZone: "UTC" }),
-  "%B": new Intl.DateTimeFormat("en-US", { month: "long", timeZone: "UTC" }),
-  "%a": new Intl.DateTimeFormat("en-US", { weekday: "short", timeZone: "UTC" }),
-  "%A": new Intl.DateTimeFormat("en-US", { weekday: "long", timeZone: "UTC" }),
-};
 const NAME_PATTERN = /^\w+$/;
 
 function escapeHtml(value = EMPTY_STRING) {
@@ -38,13 +31,6 @@ function escapeAttribute(value = EMPTY_STRING) {
   return String(value)
     .replaceAll("&", "&amp;")
     .replaceAll('"', "&quot;");
-}
-
-function createHtmlValue(value = EMPTY_STRING) {
-  return {
-    [HTML_VALUE]: 1,
-    value: String(value),
-  };
 }
 
 function unwrapHtmlValue(value) {
@@ -358,59 +344,6 @@ function normalizeLiteralKey(key = EMPTY_STRING) {
   return trimmed;
 }
 
-function parseDateValue(value) {
-  if (value instanceof Date) {
-    return Number.isNaN(value.getTime()) ? null : value;
-  }
-
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (trimmed === "now") {
-      return new Date();
-    }
-
-    const normalized = DATE_ONLY_PATTERN.test(trimmed)
-      ? `${trimmed}T00:00:00Z`
-      : trimmed;
-    const parsed = new Date(normalized);
-    return Number.isNaN(parsed.getTime()) ? null : parsed;
-  }
-
-  if (typeof value === "number") {
-    const parsed = new Date(value);
-    return Number.isNaN(parsed.getTime()) ? null : parsed;
-  }
-
-  return null;
-}
-
-function formatDate(value, format = "%Y-%m-%d") {
-  const date = parseDateValue(value);
-  if (!date) {
-    return EMPTY_STRING;
-  }
-
-  const pad = (number) => String(number).padStart(2, "0");
-  return String(format).replace(DATE_TOKENS, (token) => {
-    switch (token) {
-      case "%Y":
-        return String(date.getUTCFullYear());
-      case "%m":
-        return pad(date.getUTCMonth() + 1);
-      case "%d":
-        return pad(date.getUTCDate());
-      case "%H":
-        return pad(date.getUTCHours());
-      case "%M":
-        return pad(date.getUTCMinutes());
-      case "%S":
-        return pad(date.getUTCSeconds());
-      default:
-        return DATE_FORMATTERS[token]?.format(date) || token;
-    }
-  });
-}
-
 function skipLeadingWhitespace(text, index) {
   let cursor = index;
 
@@ -635,120 +568,6 @@ function evaluateWhenMatch(engine, expression, switchValue, context) {
   return candidates.some((candidate) => engine.resolveValue(candidate, context) === switchValue);
 }
 
-const FILTERS = {
-  relative_url(value) {
-    return value || "";
-  },
-  upcase(value) {
-    return String(value ?? EMPTY_STRING).toUpperCase();
-  },
-  downcase(value) {
-    return String(value ?? EMPTY_STRING).toLowerCase();
-  },
-  capitalize(value) {
-    const string = String(value ?? EMPTY_STRING);
-    return string ? `${string[0].toUpperCase()}${string.slice(1)}` : EMPTY_STRING;
-  },
-  strip(value) {
-    return String(value ?? EMPTY_STRING).trim();
-  },
-  size(value) {
-    if (Array.isArray(value) || typeof value === "string") {
-      return value.length;
-    }
-
-    return 0;
-  },
-  slice(value, start = 0, length) {
-    const startIndex = Number(start) || 0;
-    const endIndex = length === undefined ? undefined : startIndex + Number(length);
-
-    if (Array.isArray(value)) {
-      return value.slice(startIndex, endIndex);
-    }
-
-    const string = String(value ?? EMPTY_STRING);
-    return string.slice(startIndex, endIndex);
-  },
-  join(value, delimiter = " ") {
-    return Array.isArray(value) ? value.join(String(delimiter)) : EMPTY_STRING;
-  },
-  split(value, delimiter = " ") {
-    return typeof value === "string" ? value.split(String(delimiter)) : [];
-  },
-  map(value, property) {
-    return Array.isArray(value) ? value.map((item) => item?.[property]) : [];
-  },
-  first(value) {
-    if (Array.isArray(value) || typeof value === "string") {
-      return value[0] ?? EMPTY_STRING;
-    }
-
-    return EMPTY_STRING;
-  },
-  last(value) {
-    if (Array.isArray(value) || typeof value === "string") {
-      return value.length ? value[value.length - 1] : EMPTY_STRING;
-    }
-
-    return EMPTY_STRING;
-  },
-  date(value, format) {
-    return formatDate(value, format);
-  },
-  default(value, fallback = EMPTY_STRING) {
-    return value === undefined || value === null || value === EMPTY_STRING || value === false ? fallback : value;
-  },
-  strip_html(value) {
-    return String(value ?? EMPTY_STRING).replaceAll(/<[^>]+>/g, EMPTY_STRING);
-  },
-  newline_to_br(value) {
-    return createHtmlValue(String(value ?? EMPTY_STRING).replaceAll("\n", "<br />"));
-  },
-  abs(value) {
-    const number = Number(value);
-    return Number.isNaN(number) ? 0 : Math.abs(number);
-  },
-  at_least(value, minimum) {
-    const current = Number(value);
-    const floor = Number(minimum);
-    return Number.isNaN(current) || Number.isNaN(floor) ? 0 : Math.max(current, floor);
-  },
-  at_most(value, maximum) {
-    const current = Number(value);
-    const ceiling = Number(maximum);
-    return Number.isNaN(current) || Number.isNaN(ceiling) ? 0 : Math.min(current, ceiling);
-  },
-  ceil(value) {
-    const number = Number(value);
-    return Number.isNaN(number) ? 0 : Math.ceil(number);
-  },
-  floor(value) {
-    const number = Number(value);
-    return Number.isNaN(number) ? 0 : Math.floor(number);
-  },
-  round(value, precision = 0) {
-    const number = Number(value);
-    const digits = Number(precision);
-    if (Number.isNaN(number) || Number.isNaN(digits)) {
-      return 0;
-    }
-
-    const factor = 10 ** digits;
-    return Math.round(number * factor) / factor;
-  },
-  url_encode(value) {
-    return encodeURIComponent(String(value ?? EMPTY_STRING));
-  },
-  url_decode(value) {
-    try {
-      return decodeURIComponent(String(value ?? EMPTY_STRING));
-    } catch {
-      return String(value ?? EMPTY_STRING);
-    }
-  },
-};
-
 export class Liquid {
   constructor(options = {}) {
     const {
@@ -903,8 +722,9 @@ export class Liquid {
 
   async interpolateAttributes(element, context = {}, runtime = createRuntime(), renderDepth = 0) {
     let shouldSerializeAttributes = false;
+    const attributes = [...element.attributes];
 
-    for (const [name, value] of element.attributes) {
+    for (const [name, value] of attributes) {
       if (value.indexOf(VARIABLE_OPEN) === -1 && value.indexOf(BLOCK_OPEN) === -1) {
         continue;
       }
