@@ -647,6 +647,14 @@ export class Liquid {
     this.tags[name] = handler;
   }
 
+  plugin(plugin) {
+    if (typeof plugin === "function") {
+      plugin.call(this, this.constructor);
+    }
+
+    return this;
+  }
+
   createHandler(context = {}) {
     const handler = createHandlerState(createScope(context), {
       runtime: createRuntime(),
