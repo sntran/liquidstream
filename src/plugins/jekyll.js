@@ -96,53 +96,143 @@ function groupItems(items, getKey) {
   return groups;
 }
 
-const jekyllFilters = {
-  jsonify(value) {
-    return JSON.stringify(value);
-  },
-  slugify,
-  where(value, property, expected) {
-    if (!Array.isArray(value)) {
-      return [];
-    }
+export function jsonify(value) {
+  return JSON.stringify(value);
+}
 
-    return value.filter((item) => {
-      const actual = getPathValue(item, property);
-      return arguments.length >= 3 ? actual === expected : isLiquidTruthy(actual);
-    });
-  },
-  where_exp(value, variableName, expression) {
-    if (!Array.isArray(value) || !variableName || !expression || typeof this?.evaluate !== "function") {
-      return [];
-    }
+export function where(value, property, expected) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
 
-    return value.filter((item) => this.evaluate(expression, { [variableName]: item }));
-  },
-  relative_url(value) {
-    return buildRelativeUrl(value, this?.context?.site);
-  },
-  absolute_url(value) {
-    return buildAbsoluteUrl(value, this?.context?.site);
-  },
-  group_by(value, property) {
-    if (!Array.isArray(value)) {
-      return [];
-    }
+  return value.filter((item) => {
+    const actual = getPathValue(item, property);
+    return arguments.length >= 3 ? actual === expected : isLiquidTruthy(actual);
+  });
+}
 
-    return groupItems(value, (item) => getPathValue(item, property));
-  },
-  group_by_exp(value, variableName, expression) {
-    if (!Array.isArray(value) || !variableName || !expression || typeof this?.resolveExpression !== "function") {
-      return [];
-    }
+export function where_exp(value, variableName, expression) {
+  if (!Array.isArray(value) || !variableName || !expression || typeof this?.evaluate !== "function") {
+    return [];
+  }
 
-    return groupItems(value, (item) => {
-      return this.resolveExpression(expression, { [variableName]: item }, { applyFilters: false });
-    });
-  },
-};
+  return value.filter((item) => this.evaluate(expression, { [variableName]: item }));
+}
 
-export {
-  jekyllFilters,
-  jekyllFilters as default,
-};
+export function relative_url(value) {
+  return buildRelativeUrl(value, this?.context?.site);
+}
+
+export function absolute_url(value) {
+  return buildAbsoluteUrl(value, this?.context?.site);
+}
+
+export function group_by(value, property) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return groupItems(value, (item) => getPathValue(item, property));
+}
+
+export function group_by_exp(value, variableName, expression) {
+  if (!Array.isArray(value) || !variableName || !expression || typeof this?.resolveExpression !== "function") {
+    return [];
+  }
+
+  return groupItems(value, (item) => {
+    return this.resolveExpression(expression, { [variableName]: item }, { applyFilters: false });
+  });
+}
+
+function parseIncludeRelativeExpression(expression = EMPTY_STRING) {
+  const [snippetExpression] = String(expression)
+    .split(",")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+
+  return snippetExpression ?? EMPTY_STRING;
+}
+
+function isQuotedStringLiteral(expression = EMPTY_STRING) {
+  const normalized = String(expression).trim();
+
+  return (
+    normalized.length >= 2 &&
+    ((normalized.startsWith('"') && normalized.endsWith('"')) ||
+      (normalized.startsWith("'") && normalized.endsWith("'")))
+  );
+}
+
+function normalizeIncludeRelativePath(expression = EMPTY_STRING, resolvedValue) {
+  const normalized = String(expression).trim();
+
+  if (isQuotedStringLiteral(normalized)) {
+    return normalized.slice(1, -1);
+  }
+
+  if (resolvedValue !== null && resolvedValue !== undefined && resolvedValue !== EMPTY_STRING) {
+    return String(resolvedValue).trim();
+  }
+
+  return normalized;
+}
+
+function hasParentTraversal(pathname = EMPTY_STRING) {
+  return String(pathname)
+    .split("/")
+    .includes("..");
+}
+
+async function includeRelativeTag({ context, engine, expression, resolveArgument, state }) {
+  const snippetExpression = parseIncludeRelativeExpression(expression);
+  if (!snippetExpression) {
+    return EMPTY_STRING;
+  }
+
+  const snippetValue = resolveArgument(snippetExpression);
+  const snippetName = normalizeIncludeRelativePath(snippetExpression, snippetValue);
+  if (!snippetName || hasParentTraversal(snippetName)) {
+    return EMPTY_STRING;
+  }
+
+  const nextDepth = state.renderDepth + 1;
+
+  if (nextDepth > 10) {
+    throw new Error("Max render depth exceeded");
+  }
+
+  const currentPath = String(context?.page?.path ?? "/");
+  const baseDirectory = path.posix.dirname(currentPath);
+  const resolvedPath = path.posix.normalize(path.posix.join(baseDirectory, snippetName));
+  const request = new Request(new URL(resolvedPath, "https://liquid.local/"));
+  const response = await engine.fetch?.(request);
+
+  if (!response?.ok) {
+    return EMPTY_STRING;
+  }
+
+  const template = await response.text();
+  const childContext = Object.create(context && typeof context === "object" ? context : null);
+  childContext.page = {
+    ...(context?.page && typeof context.page === "object" ? context.page : {}),
+    path: resolvedPath,
+  };
+
+  return await engine.renderFragment(template, childContext, state.runtime, nextDepth);
+}
+
+export default function plugin(Liquid) {
+  this.registerFilter("jsonify", jsonify);
+  this.registerFilter("slugify", slugify);
+  this.registerFilter("where", where);
+  this.registerFilter("where_exp", where_exp);
+  this.registerFilter("relative_url", relative_url);
+  this.registerFilter("absolute_url", absolute_url);
+  this.registerFilter("group_by", group_by);
+  this.registerFilter("group_by_exp", group_by_exp);
+
+  this.registerTag("include_relative", includeRelativeTag);
+
+  return Liquid;
+}

@@ -570,6 +570,25 @@ describe("Liquid Streaming State Machine", () => {
     assert.equal(html, "<strong>hi</strong>");
   });
 
+  it("supports chainable Liquid-style plugins", async () => {
+    const pluginA = function (LiquidClass) {
+      this.registerFilter("from_plugin_a", (value) => `${value}:${LiquidClass.name}`);
+    };
+    const pluginB = function () {
+      this.registerFilter("from_plugin_b", (value) => `${value}!`);
+    };
+
+    const engine = new Liquid();
+    const chained = engine.plugin(pluginA).plugin(pluginB);
+    const html = await engine.parseAndRender(
+      '{{ "hi" | from_plugin_a | from_plugin_b }}',
+      {},
+    );
+
+    assert.equal(chained, engine);
+    assert.equal(html, "hi:Liquid!");
+  });
+
   it("supports custom tags that return escaped output objects", async () => {
     const engine = new Liquid();
     engine.registerTag("safe_box", () => ({
