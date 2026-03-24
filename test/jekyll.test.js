@@ -165,3 +165,52 @@ describe("Jekyll Filters", () => {
     assert.equal(html, "");
   });
 });
+
+describe("Jekyll include unquoted path support", () => {
+  it("fetches header.html from the includes directory when path is unquoted (Test Case 1)", async () => {
+    const engine = new Liquid({
+      fetch: createMockFetch({
+        "header.html": "<header>Site Header</header>",
+      }),
+    }).plugin(jekyll);
+
+    const html = await engine.parseAndRender(
+      "{% include header.html %}",
+      {},
+    );
+
+    assert.equal(html, "<header>Site Header</header>");
+  });
+
+  it("resolves include_relative with an unquoted subdirectory path relative to page (Test Case 2)", async () => {
+    const engine = new Liquid({
+      fetch: createMockFetch({
+        "docs/sidebar.liquid": "<aside>Sidebar</aside>",
+      }),
+    }).plugin(jekyll);
+
+    const html = await engine.parseAndRender(
+      "{% include_relative sidebar.liquid %}",
+      {
+        page: { path: "docs/index.md" },
+      },
+    );
+
+    assert.equal(html, "<aside>Sidebar</aside>");
+  });
+
+  it("still resolves include via an assigned variable (Test Case 3)", async () => {
+    const engine = new Liquid({
+      fetch: createMockFetch({
+        "nav.html": "<nav>Navigation</nav>",
+      }),
+    }).plugin(jekyll);
+
+    const html = await engine.parseAndRender(
+      '{% assign my_file = "nav.html" %}{% include my_file %}',
+      {},
+    );
+
+    assert.equal(html, "<nav>Navigation</nav>");
+  });
+});

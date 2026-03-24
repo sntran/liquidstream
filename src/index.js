@@ -946,7 +946,15 @@ export class Liquid {
   async renderPartial(partialExpression, handler, mode) {
     const partial = parsePartialExpression(partialExpression);
     const snippetValue = this.resolveArgument(partial.snippetExpression, handler.currentContext);
-    const snippetName = String(snippetValue ?? EMPTY_STRING);
+    const rawExpression = String(partial.snippetExpression ?? EMPTY_STRING).trim();
+    const resolvedName = String(snippetValue ?? EMPTY_STRING);
+    const isUnquotedLiteralPath =
+      !resolvedName &&
+      rawExpression &&
+      !rawExpression.startsWith('"') &&
+      !rawExpression.startsWith("'") &&
+      (rawExpression.includes(".") || rawExpression.includes("/"));
+    const snippetName = isUnquotedLiteralPath ? rawExpression : resolvedName;
     const nextDepth = handler.renderDepth + 1;
 
     if (nextDepth > 10) {
