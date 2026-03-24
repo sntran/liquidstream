@@ -194,6 +194,55 @@ function readLiquidTag(text, startIndex, openToken, closeToken) {
   };
 }
 
+function hasIncompleteLiquidTag(text = EMPTY_STRING) {
+  let cursor = 0;
+
+  while (cursor < text.length) {
+    const marker = getNextLiquidMarker(text, cursor);
+    if (marker === -1) {
+      return false;
+    }
+
+    const isVariable = text.startsWith(VARIABLE_OPEN, marker);
+    const tag = readLiquidTag(
+      text,
+      marker,
+      isVariable ? VARIABLE_OPEN : BLOCK_OPEN,
+      isVariable ? VARIABLE_CLOSE : BLOCK_CLOSE,
+    );
+
+    if (!tag) {
+      return true;
+    }
+
+    cursor = tag.endIndex;
+  }
+
+  return false;
+}
+
+function hasQuotedIncompleteLiquidTag(text = EMPTY_STRING) {
+  const marker = getNextLiquidMarker(text, 0);
+  if (marker === -1) {
+    return false;
+  }
+
+  const startIndex = text.lastIndexOf(VARIABLE_OPEN) > text.lastIndexOf(BLOCK_OPEN)
+    ? text.lastIndexOf(VARIABLE_OPEN)
+    : text.lastIndexOf(BLOCK_OPEN);
+  const fragment = startIndex === -1 ? text : text.slice(startIndex);
+  let quote = null;
+
+  for (let index = 0; index < fragment.length; index += 1) {
+    const char = fragment[index];
+    if ((char === '"' || char === "'") && !isEscaped(fragment, index) && (!quote || quote === char)) {
+      quote = quote === char ? null : char;
+    }
+  }
+
+  return Boolean(quote);
+}
+
 function serializeStartTag(element) {
   const attributes = [...element.attributes]
     .map(([name, value]) => (!value ? name : `${name}="${escapeAttribute(value)}"`))
@@ -493,6 +542,7 @@ function createHandlerState(scope, options = {}) {
     state: STATE_EMIT,
     currentContext: scope,
     textBufferParts: [],
+    inLiquidTag: false,
     ifStack: [],
     skipDepth: 0,
     skipMode: null,
@@ -623,6 +673,12 @@ export class Liquid {
 
     return {
       element: async (element) => {
+        if (handler.inLiquidTag) {
+          handler.textBufferParts.push(serializeStartTag(element));
+          element.removeAndKeepContent();
+          return;
+        }
+
         if (handler.state === STATE_RAW && handler.raw) {
           element.onEndTag(onEndTag);
           appendRawPart(handler.raw, serializeStartTag(element));
@@ -653,21 +709,32 @@ export class Liquid {
 
       text: async (chunk) => {
         handler.textBufferParts.push(chunk.text);
+        handler.inLiquidTag = hasIncompleteLiquidTag(handler.textBufferParts.join(EMPTY_STRING));
 
         if (!chunk.lastInTextNode) {
           chunk.replace(EMPTY_STRING);
           return;
         }
 
+        if (
+          handler.inLiquidTag &&
+          chunk.text === EMPTY_STRING &&
+          hasQuotedIncompleteLiquidTag(handler.textBufferParts.join(EMPTY_STRING))
+        ) {
+          chunk.replace(EMPTY_STRING);
+          return;
+        }
+
         const text = handler.textBufferParts.join(EMPTY_STRING);
         handler.textBufferParts.length = 0;
+        handler.inLiquidTag = false;
         const output = await this.processText(text, handler);
         chunk.replace(output, { html: true });
       },
     };
   }
 
-  async parseAndRender(html, context = {}) {
+  async parseAndRender(html = EMPTY_STRING, context = {}) {
     const HTMLRewriterClass = this.HTMLRewriterClass || DefaultHTMLRewriter;
     const rewriter = new HTMLRewriterClass();
     const handler = this.createHandler(context);
@@ -675,7 +742,7 @@ export class Liquid {
     rewriter.on("*", { element: handler.element });
     rewriter.onDocument({ text: handler.text });
 
-    return await rewriter.transform(new Response(html)).text();
+    return rewriter.transform(new Response(html)).text();
   }
 
   renderResolvedValue(value) {

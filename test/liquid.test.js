@@ -335,6 +335,19 @@ describe("Liquid Streaming State Machine", () => {
     assert.equal(html, "hello");
   });
 
+  it("supports assign plus split with html-like delimiters inside body content", async () => {
+    const engine = new Liquid();
+
+    const html = await engine.parseAndRender(
+      `<body>{% assign parts = content | split: '<h2' %}<nav>{{ parts | size }}</nav><main>{{ parts | first | raw }}</main></body>`,
+      {
+        content: "<p>Lead</p><h2>Section</h2>",
+      },
+    );
+
+    assert.equal(html, "<body><nav>2</nav><main><p>Lead</p></main>");
+  });
+
   it("captures rendered content into a local variable", async () => {
     const engine = new Liquid();
 
