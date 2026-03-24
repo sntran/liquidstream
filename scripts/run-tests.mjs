@@ -8,6 +8,7 @@ const testFiles = [
   "test/partials.test.js",
   "test/filters.test.js",
   "test/jekyll.test.js",
+  "test/worker.test.js",
   "test/compatibility.test.js",
   "test/properties.test.js",
   "test/performance.test.js",

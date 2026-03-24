@@ -1,0 +1,174 @@
+@theme {
+  --font-sans: "Instrument Sans", "Segoe UI", sans-serif;
+  --font-mono: "FontWithASyntaxHighlighter", "SFMono-Regular", ui-monospace, monospace;
+}
+
+@font-face {
+  font-family: "FontWithASyntaxHighlighter";
+  src: url("assets/fonts/FontWithASyntaxHighlighter-Regular.woff2") format("woff2");
+  font-display: swap;
+}
+
+@utility surface-panel {
+  @apply rounded-[1.75rem] border border-white/10 bg-slate-900/72 shadow-xl shadow-slate-950/35 backdrop-blur;
+}
+
+@utility content-flow {
+  @apply [&_a]:font-medium [&_a]:text-sky-300 [&_a]:underline [&_a]:decoration-sky-400/30 [&_a]:underline-offset-4 [&_a:hover]:text-sky-200 [&_code]:rounded-md [&_code]:bg-slate-800/90 [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-[0.95em] [&_code]:text-sky-100 [&_details]:mt-6 [&_details]:rounded-2xl [&_details]:border [&_details]:border-white/10 [&_details]:bg-slate-950/50 [&_details]:p-4 [&_details[open]]:bg-slate-950/80 [&_em]:text-slate-100 [&_h1]:text-4xl [&_h1]:font-semibold [&_h1]:tracking-[-0.05em] [&_h1]:text-white sm:[&_h1]:text-5xl [&_h2]:text-2xl [&_h2]:font-semibold [&_h2]:tracking-[-0.04em] [&_h2]:text-white sm:[&_h2]:text-3xl [&_h3]:mt-8 [&_h3]:text-lg [&_h3]:font-semibold [&_h3]:text-sky-100 [&_h4]:mt-6 [&_h4]:text-base [&_h4]:font-semibold [&_h4]:text-slate-100 [&_li]:leading-7 [&_li]:pl-1 [&_ol]:mt-5 [&_ol]:list-decimal [&_ol]:space-y-3 [&_ol]:pl-6 [&_p]:mt-4 [&_p]:leading-8 [&_p]:text-slate-300 [&_pre]:mt-6 [&_pre]:overflow-x-auto [&_pre]:rounded-[1.4rem] [&_pre]:border [&_pre]:border-white/10 [&_pre]:bg-slate-950 [&_pre]:px-5 [&_pre]:py-4 [&_pre]:font-mono [&_pre]:text-[0.92rem] [&_pre]:leading-7 [&_pre]:text-slate-100 [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_pre_code]:text-inherit [&_summary]:cursor-pointer [&_summary]:font-semibold [&_summary]:text-slate-100 [&_summary]:marker:text-sky-300 [&_table]:mt-6 [&_table]:w-full [&_table]:border-collapse [&_tbody_tr]:border-t [&_tbody_tr]:border-white/10 [&_td]:px-3 [&_td]:py-3 [&_th]:px-3 [&_th]:py-3 [&_th]:text-left [&_th]:text-sm [&_th]:font-semibold [&_th]:text-slate-100 [&_thead]:border-b [&_thead]:border-white/10 [&_ul]:mt-5 [&_ul]:list-disc [&_ul]:space-y-3 [&_ul]:pl-6 [&_ul_li::marker]:text-sky-300;
+}
+
+@utility section-target {
+  scroll-margin-top: 1.5rem;
+}
+
+body {
+  @apply min-h-screen bg-slate-950 font-sans text-slate-200 antialiased selection:bg-sky-400 selection:text-slate-950 lg:grid lg:grid-cols-[18rem_minmax(0,48rem)] lg:justify-center lg:gap-x-8;
+}
+
+.site-shell {
+  @apply relative overflow-x-hidden;
+}
+
+.page-aura {
+  @apply pointer-events-none fixed inset-0 -z-10 bg-[radial-gradient(circle_at_top_left,rgba(56,189,248,0.14),transparent_28%),radial-gradient(circle_at_80%_12%,rgba(14,165,233,0.16),transparent_22%),linear-gradient(180deg,#020617_0%,#020617_100%)];
+}
+
+.skip-link {
+  @apply sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-full focus:bg-sky-300 focus:px-4 focus:py-2 focus:font-semibold focus:text-slate-950;
+}
+
+.page-header {
+  @apply relative z-10 col-span-full mx-auto w-full max-w-7xl px-4 pb-2 pt-6 sm:px-6 lg:px-8 lg:pt-10;
+}
+
+.page-title {
+  @apply mt-4 text-4xl font-semibold tracking-[-0.05em] text-white sm:text-5xl;
+}
+
+.page-summary {
+  @apply mt-4 max-w-3xl text-base leading-8 text-slate-300;
+}
+
+.page-nav {
+  @apply relative z-10 mx-4 h-fit self-start sm:mx-6 lg:sticky lg:top-10 lg:mx-0;
+  @apply lg:col-start-1 lg:row-start-2;
+}
+
+.page-main {
+  @apply relative z-10 min-w-0 px-4 py-6 sm:px-6 lg:px-0 lg:py-10;
+  @apply lg:col-start-2 lg:row-start-2;
+}
+
+.doc-shell {
+  @apply mx-auto max-w-3xl space-y-6;
+}
+
+.doc-card {
+  @apply surface-panel content-flow p-6 sm:p-8 lg:p-10;
+}
+
+.doc-card-lead {
+  @apply border-sky-400/20 bg-gradient-to-br from-sky-500/10 via-slate-900/80 to-slate-900/92;
+}
+
+.doc-sections {
+  @apply space-y-8 sm:space-y-10;
+}
+
+.doc-section {
+  @apply section-target;
+}
+
+.toc-shell {
+  @apply surface-panel p-5 sm:p-6;
+}
+
+.toc-indicator {
+  @apply inline-flex items-center gap-2 text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-slate-400;
+}
+
+.toc-indicator-dot {
+  @apply h-2 w-2 rounded-full bg-sky-300 shadow-[0_0_0_4px_rgba(56,189,248,0.18)];
+}
+
+.toc-scroll {
+  @apply relative mt-5 max-h-[min(52vh,34rem)] space-y-2 overflow-y-auto border-l border-sky-400/25 pl-3 pr-1;
+  scroll-target-group: auto;
+}
+
+.toc-scroll::before {
+  @apply pointer-events-none absolute bottom-0 left-0 top-0 w-px origin-top bg-sky-400;
+  content: "";
+  animation: toc-progress linear both;
+  animation-timeline: scroll(root block);
+}
+
+.toc-link {
+  @apply relative block rounded-r-2xl border border-transparent px-3 py-2 pl-7 text-sm leading-6 text-slate-300 transition hover:border-sky-400/25 hover:bg-sky-400/8 hover:text-sky-100 focus:outline-none focus-visible:border-sky-300 focus-visible:bg-sky-400/10 focus-visible:text-sky-50;
+}
+
+.toc-link::before {
+  @apply absolute left-3 top-1/2 h-2 w-2 -translate-y-1/2 rounded-full bg-slate-600/80;
+  content: "";
+}
+
+.toc-link:target-current {
+  @apply border-sky-300/30 bg-sky-400/10 text-sky-100;
+}
+
+.toc-link:target-current::before {
+  @apply bg-sky-300 shadow-[0_0_0_5px_rgba(56,189,248,0.18)];
+}
+
+.toc-link:target-before {
+  @apply text-slate-400;
+}
+
+.toc-link:target-after {
+  @apply text-slate-300;
+}
+
+.scroll-section {
+  view-timeline-name: --section;
+}
+
+.footer-shell {
+  @apply relative z-10 col-span-full mx-auto mt-6 w-full max-w-7xl px-4 pb-8 sm:px-6 lg:px-8;
+}
+
+.footer-card {
+  @apply surface-panel flex flex-col gap-3 px-5 py-4 text-sm leading-6 text-slate-300 sm:flex-row sm:items-center sm:justify-between;
+}
+
+.footer-meta {
+  @apply flex flex-wrap items-center gap-2;
+}
+
+.footer-pill {
+  @apply rounded-full border border-white/10 bg-white/5 px-3 py-1 font-medium text-slate-200;
+}
+
+.eyebrow {
+  @apply text-[0.72rem] font-semibold uppercase tracking-[0.28em] text-sky-300;
+}
+
+@keyframes toc-progress {
+  from {
+    transform: scaleY(0);
+  }
+
+  to {
+    transform: scaleY(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}

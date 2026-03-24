@@ -1,0 +1,19 @@
+<div class="footer-card">
+  {% assign benchmark_label = perf.benchmark_label | default: site.benchmark_label | default: "Median TTFB 2.033 ms" %}
+  {% assign render_ms = perf.render_ms | default: 0 %}
+  <p class="footer-meta">
+    <span class="footer-pill">{{ site.environment | default: "GitHub Pages" }}</span>
+    <span class="footer-pill">
+      {% if perf.render_ms %}
+        Worker render {{ render_ms | append: "ms" }}
+      {% else %}
+        Approx benchmark {{ benchmark_label }}
+      {% endif %}
+    </span>
+    <span class="footer-pill">Rendered {{ "now" | date: "%B %d, %Y" }}</span>
+    <span class="footer-pill">{{ content | split: '<h2' | size | minus: 1 | at_least: 0 }} sections</span>
+  </p>
+  <p class="text-sm text-slate-400">
+    Built with Liquid filters like <code>{{ "date|default|append|minus|relative_url" | split: "|" | join: ", " }}</code>.
+  </p>
+</div>

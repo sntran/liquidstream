@@ -1,0 +1,14 @@
+<nav class="page-nav toc-shell" aria-label="README sections">
+  <p class="eyebrow">Table of contents</p>
+  <ol class="toc-scroll">
+    {% for chunk in section_chunks offset:1 %}
+      {% assign chunk_parts = chunk | split: '>' %}
+      {% assign heading_text = chunk_parts | slice: 1, 1 | first %}
+      {% assign section_title = heading_text | append: '>' | strip_html | strip %}
+      {% assign section_id = section_title | slugify %}
+      <li>
+        <a class="toc-link" href="#{{ section_id }}">{{ section_title | default: section_id | capitalize }}</a>
+      </li>
+    {% endfor %}
+  </ol>
+</nav>

@@ -1,0 +1,13 @@
+title: "@sntran/liquidstream"
+description: "Streaming-first Liquid for Cloudflare Workers, edge runtimes, and Node.js."
+url: "https://sntran.github.io"
+baseurl: "/liquidstream"
+markdown: kramdown
+defaults:
+  - scope:
+      path: "README.md"
+    values:
+      layout: index
+      permalink: /
+      title: "@sntran/liquidstream"
+      description: "Streaming-first Liquid for Cloudflare Workers, edge runtimes, and Node.js."

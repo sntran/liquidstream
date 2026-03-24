@@ -20,6 +20,28 @@ function detectDynamicCode(source) {
   return /\beval\s*\(|new Function\s*\(/.test(source);
 }
 
+function roundMs(value) {
+  return Number(value.toFixed(3));
+}
+
+function summarizeDurations(samples) {
+  const sorted = [...samples].sort((left, right) => left - right);
+  const percentile = (ratio) => {
+    const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * ratio) - 1));
+    return sorted[index];
+  };
+
+  const average = sorted.reduce((sum, value) => sum + value, 0) / sorted.length;
+  return {
+    averageMs: roundMs(average),
+    medianMs: roundMs(percentile(0.5)),
+    p95Ms: roundMs(percentile(0.95)),
+    minMs: roundMs(sorted[0]),
+    maxMs: roundMs(sorted[sorted.length - 1]),
+    samples: sorted.length,
+  };
+}
+
 async function measureAverageRender(engine, template, context, iterations = 100) {
   for (let index = 0; index < 20; index += 1) {
     await engine.parseAndRender(template, context);
@@ -62,8 +84,8 @@ function legacyNeedsElementHandling(template = "") {
 }
 
 async function measureStreamTtfb(engine, template, context, options = {}) {
-  const { iterations = 10, preScan = false } = options;
-  let totalMs = 0;
+  const { iterations = 25, preScan = false } = options;
+  const durations = [];
   let firstChunkBytes = 0;
 
   for (let index = 0; index < iterations; index += 1) {
@@ -80,7 +102,7 @@ async function measureStreamTtfb(engine, template, context, options = {}) {
     const response = rewriter.transform(new Response(template));
     const reader = response.body.getReader();
     const chunk = await reader.read();
-    totalMs += performance.now() - start;
+    durations.push(performance.now() - start);
     firstChunkBytes = chunk.value?.length ?? 0;
     let nextChunk = chunk;
 
@@ -91,23 +113,23 @@ async function measureStreamTtfb(engine, template, context, options = {}) {
 
   return {
     firstChunkBytes,
-    ttfbMs: Number((totalMs / iterations).toFixed(3)),
+    ...summarizeDurations(durations),
   };
 }
 
-async function measureStringTtfb(engine, template, context, iterations = 10) {
-  let totalMs = 0;
+async function measureStringTtfb(engine, template, context, iterations = 25) {
+  const durations = [];
   let output = "";
 
   for (let index = 0; index < iterations; index += 1) {
     const start = performance.now();
     output = await engine.parseAndRender(template, context);
-    totalMs += performance.now() - start;
+    durations.push(performance.now() - start);
   }
 
   return {
     firstChunkBytes: output ? 1 : 0,
-    ttfbMs: Number((totalMs / iterations).toFixed(3)),
+    ...summarizeDurations(durations),
   };
 }
 
@@ -160,10 +182,12 @@ const ttfbTemplate = [
   "{% endfor %}",
   "</main>",
 ].join("");
+const filterFirstByteTemplate = "{{ item.name | capitalize }}".repeat(16);
 const loopItems = Array.from({ length: 1000 }, (_, index) => ({
   name: `item-${index}`,
 }));
 const heavyContext = { items: loopItems };
+const filterFirstByteContext = { item: loopItems[0] };
 
 const bundleSources = await Promise.all([
   readFile(new URL("../src/index.js", import.meta.url)),
@@ -188,11 +212,17 @@ const report = {
       liquidjs: await measureAverageRender(liquidjsEngine, simpleTemplate, simpleContext),
     },
     firstByte: {
-      workerLiquid: await measureStreamTtfb(workerEngine, ttfbTemplate, heavyContext),
-      workerLiquidWithPreScan: await measureStreamTtfb(workerEngine, ttfbTemplate, heavyContext, {
-        preScan: true,
-      }),
-      liquidjs: await measureStringTtfb(liquidjsEngine, ttfbTemplate, heavyContext),
+      staticPrefix: {
+        workerLiquid: await measureStreamTtfb(workerEngine, ttfbTemplate, heavyContext),
+        workerLiquidWithPreScan: await measureStreamTtfb(workerEngine, ttfbTemplate, heavyContext, {
+          preScan: true,
+        }),
+        liquidjs: await measureStringTtfb(liquidjsEngine, ttfbTemplate, heavyContext),
+      },
+      filterDependent: {
+        workerLiquid: await measureStreamTtfb(workerEngine, filterFirstByteTemplate, filterFirstByteContext),
+        liquidjs: await measureStringTtfb(liquidjsEngine, filterFirstByteTemplate, filterFirstByteContext),
+      },
     },
   },
   memory: {

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en" class="scroll-smooth">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>{{ page.title | default: site.title | default: 'liquidstream' }}</title>
+    <meta name="description" content="{{ page.description | default: site.description | default: 'Streaming-first Liquid for Cloudflare Workers, edge runtimes, and Node.js.' }}">
+    <link rel="canonical" href="{{ page.url | default: '/' | absolute_url }}">
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <style type="text/tailwindcss">
+      {% include index.css %}
+    </style>
+  </head>
+  <body class="site-shell">
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <div aria-hidden="true" class="page-aura"></div>
+    {% assign section_chunks = content | split: '<h2' %}
+
+    {% include header.liquid %}
+    {% include nav.liquid %}
+
+    <main id="main-content" class="page-main">
+      <article class="doc-shell" aria-label="Project documentation">
+        <div class="doc-card doc-card-lead">
+          {{ section_chunks | first | raw }}
+        </div>
+
+        <div class="doc-sections">
+          {% for chunk in section_chunks offset:1 %}
+            {% assign chunk_parts = chunk | split: '>' %}
+            {% assign heading_text = chunk_parts | slice: 1, 1 | first %}
+            {% assign section_title = heading_text | append: '>' | strip_html | strip %}
+            {% assign section_id = section_title | slugify %}
+            {% assign section_markup = chunk_parts | slice: 2, chunk_parts.size | join: '>' %}
+            <section id="section-{{ section_id }}" class="doc-section scroll-section">
+              <div class="doc-card">
+                <h2 id="{{ section_id }}">{{ section_title }}</h2>
+                {{ section_markup | raw }}
+              </div>
+            </section>
+          {% endfor %}
+        </div>
+      </article>
+    </main>
+
+    <footer class="footer-shell">
+      {% include footer.liquid %}
+    </footer>
+  </body>
+</html>

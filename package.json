@@ -23,6 +23,7 @@
   },
   "license": "MIT",
   "scripts": {
+    "start": "npx -y wrangler pages dev .",
     "test": "node scripts/run-tests.mjs",
     "coverage": "c8 --reporter=text --include=src/index.js node scripts/run-tests.mjs",
     "benchmark": "node --expose-gc --experimental-wasm-jspi scripts/benchmark-liquid.mjs"
@@ -43,6 +44,7 @@
   "devDependencies": {
     "c8": "^11.0.0",
     "fast-check": "^4.6.0",
-    "liquidjs": "^10.25.0"
+    "liquidjs": "^10.25.0",
+    "marked": "^16.4.0"
   }
 }
