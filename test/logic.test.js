@@ -203,6 +203,43 @@ describe("Liquid Logic Parity", () => {
     assert.equal(rendered, "{% if condition %}literal");
   });
 
+  it("outputs raw block content verbatim between normal interpolations", async () => {
+    const engine = new Liquid();
+
+    const html = await engine.parseAndRender(
+      "Normal {{ var }} {% raw %}{{ hidden }}{% endraw %} Back",
+      { var: "value", hidden: "FAIL" },
+    );
+
+    assert.equal(html, "Normal value {{ hidden }} Back");
+  });
+
+  it("suppresses block tags inside raw blocks, outputting them as plain text", async () => {
+    const engine = new Liquid();
+
+    const html = await engine.parseAndRender(
+      "{% raw %}{% assign x = 1 %}{% endraw %}",
+      {},
+    );
+
+    assert.equal(html, "{% assign x = 1 %}");
+  });
+
+  it("preserves STATE_RAW across renderFragment calls with no leakage", async () => {
+    const engine = new Liquid();
+
+    // Confirm the assign is NOT executed — title stays undefined after the raw block.
+    // Raw block content is output verbatim (no HTML-escaping), so single quotes
+    // remain as literal characters rather than being encoded as &#39;
+    const html = await engine.parseAndRender(
+      "{% raw %}{% assign title = 'secret' %}{% endraw %}{{ title }}",
+      {},
+    );
+
+    // Literal tag text is emitted; title is never assigned so {{ title }} is empty
+    assert.equal(html, "{% assign title = 'secret' %}");
+  });
+
   it("handles malformed counter expressions and invalid ranges defensively", async () => {
     const engine = new Liquid();
 
