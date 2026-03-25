@@ -11,9 +11,12 @@
       {% endif %}
     </span>
     <span class="footer-pill">Rendered {{ "now" | date: "%B %d, %Y" }}</span>
-    <span class="footer-pill">{{ content | split: '<h2' | size | minus: 1 | at_least: 0 }} sections</span>
-  </p>
-  <p class="text-sm text-slate-400">
-    Built with Liquid filters like <code>{{ "date|default|append|minus|relative_url" | split: "|" | join: ", " }}</code>.
+    <span class="footer-pill">
+      {% if site.environment == "Cloudflare Pages" %}
+        <a href="https://sntran.github.io/liquidstream/" target="_blank" rel="noopener">View on GitHub Pages</a>
+      {% else %}
+        <a href="https://liquidstream.pages.dev/" target="_blank" rel="noopener">View on Cloudflare Pages</a>
+      {% endif %}
+    </span>
   </p>
 </div>

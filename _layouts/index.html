@@ -19,13 +19,11 @@
 
     {% include header.liquid %}
     {% include nav.liquid %}
-
     <main id="main-content" class="page-main">
       <article class="doc-shell" aria-label="Project documentation">
         <div class="doc-card doc-card-lead">
           {{ section_chunks | first | raw }}
         </div>
-
         <div class="doc-sections">
           {% for chunk in section_chunks offset:1 %}
             {% assign chunk_parts = chunk | split: '>' %}

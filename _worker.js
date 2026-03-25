@@ -80,8 +80,10 @@ function createLiquidFetch(env, request) {
   };
 }
 
-export function buildReadmePage(markdown) {
-  const tokens = marked.lexer(markdown);
+export async function buildReadmePage(markdown, liquid) {
+  // First, process the markdown through Liquid to handle tags like {% raw %}
+  const liquidProcessed = await liquid.parseAndRender(markdown, {});
+  const tokens = marked.lexer(liquidProcessed);
   const introTokens = [];
   const sections = [];
   const toc = [];
@@ -163,10 +165,10 @@ export default {
       fetchText(env, request, ["/_layouts/index.html", "/_layouts/"]),
       fetchText(env, request, "/README.md"),
     ]);
-    const readme = buildReadmePage(readmeSource);
     const liquid = new Liquid({
       fetch: createLiquidFetch(env, request),
     }).plugin(jekyll);
+    const readme = await buildReadmePage(readmeSource, liquid);
 
     const html = await liquid.parseAndRender(layout, {
       content: readme.content,
