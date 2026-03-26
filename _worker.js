@@ -80,10 +80,8 @@ function createLiquidFetch(env, request) {
   };
 }
 
-export async function buildReadmePage(markdown, liquid) {
-  // First, process the markdown through Liquid to handle tags like {% raw %}
-  const liquidProcessed = await liquid.parseAndRender(markdown, {});
-  const tokens = marked.lexer(liquidProcessed);
+function renderReadmePage(markdown) {
+  const tokens = marked.lexer(markdown);
   const introTokens = [];
   const sections = [];
   const toc = [];
@@ -150,6 +148,14 @@ export async function buildReadmePage(markdown, liquid) {
     sections,
     content: `${marked.parser(introTokens)}${sections.map((section) => section.html).join("")}`,
   };
+}
+
+export function buildReadmePage(markdown, liquid) {
+  if (!liquid) {
+    return renderReadmePage(markdown);
+  }
+
+  return liquid.parseAndRender(markdown, {}).then((liquidProcessed) => renderReadmePage(liquidProcessed));
 }
 
 export default {

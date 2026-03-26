@@ -232,7 +232,10 @@ export default function plugin(Liquid) {
   this.registerFilter("group_by", group_by);
   this.registerFilter("group_by_exp", group_by_exp);
 
-  this.registerTag("include_relative", includeRelativeTag);
+  this.registerTag("include_relative", {
+    name: "include_relative",
+    onEmit: includeRelativeTag,
+  });
 
   return Liquid;
 }

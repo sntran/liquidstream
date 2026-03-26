@@ -1,528 +1,55 @@
 import { HTMLRewriter as DefaultHTMLRewriter } from "@sntran/html-rewriter";
 import * as filters from "./filters/index.js";
+import { parsePartialExpression } from "./tags/file.js";
+import { renderCapture } from "./tags/iteration.js";
+import { coreTags } from "./tags/index.js";
+import { applySignal } from "./tags/signals.js";
+import {
+  BLOCK_CLOSE,
+  BLOCK_OPEN,
+  COMPARISON_OPERATORS,
+  EMPTY_STRING,
+  HTML_VALUE,
+  NUMBER_PATTERN,
+  VARIABLE_CLOSE,
+  VARIABLE_OPEN,
+  appendCapturePart,
+  appendRawPart,
+  createHandlerState,
+  createRuntime,
+  createScope,
+  escapeHtml,
+  findTopLevelOperator,
+  getResumeCursor,
+  getNextLiquidMarker,
+  hasIncompleteLiquidTag,
+  hasQuotedIncompleteLiquidTag,
+  isLiquidTruthy,
+  normalizeLiteralKey,
+  parsePathSegments,
+  parseTagInvocation,
+  readLiquidTag,
+  resolvePathValue,
+  skipLeadingWhitespace,
+  splitFilterArguments,
+  splitFilterNameAndArguments,
+  splitFilterSegments,
+  splitRangeExpression,
+  tokenize,
+  trimBufferedTrailingWhitespace,
+  trimTrailingWhitespace,
+  unwrapHtmlValue,
+  serializeEndTag,
+  serializeStartTag,
+} from "./utils.js";
 
 const STATE_EMIT = "EMIT";
 const STATE_SKIP = "SKIP";
 const STATE_CAPTURE = "CAPTURE";
 const STATE_RAW = "RAW";
-
-const NUMBER_PATTERN = /^-?\d+(?:\.\d+)?$/;
-const RANGE_PATTERN = /^\((.+)\.\.(.+)\)$/;
-const VARIABLE_OPEN = "{{";
-const VARIABLE_CLOSE = "}}";
-const BLOCK_OPEN = "{%";
-const BLOCK_CLOSE = "%}";
-const EMPTY_STRING = "";
-const HTML_VALUE = "_h";
-const WHITESPACE_CHARACTERS = new Set([" ", "\n", "\r", "\t", "\f"]);
-const COMPARISON_OPERATORS = [">=", "<=", "!=", "==", ">", "<"];
-const NAME_PATTERN = /^\w+$/;
 const FILTERS = { ...filters };
 
-function escapeHtml(value = EMPTY_STRING) {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
-function escapeAttribute(value = EMPTY_STRING) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll('"', "&quot;");
-}
-
-function unwrapHtmlValue(value) {
-  return value && typeof value === "object" && value[HTML_VALUE] ? value.value : value;
-}
-
-function createScope(parent = null) {
-  return Object.create(parent && typeof parent === "object" ? parent : null);
-}
-
-function parseForExpression(expression = EMPTY_STRING) {
-  const tokens = tokenize(expression, " ").filter(Boolean);
-  if (tokens.length < 4 || tokens[0] !== "for" || tokens[2] !== "in" || !NAME_PATTERN.test(tokens[1])) {
-    return null;
-  }
-
-  const collectionTokens = [];
-  let limitExpression = null;
-  let offsetExpression = null;
-  let reversed = false;
-
-  for (let index = 3; index < tokens.length; index += 1) {
-    const token = tokens[index];
-
-    if (token === "reversed") {
-      reversed = true;
-      continue;
-    }
-
-    if (token.startsWith("limit:")) {
-      limitExpression = token.slice(6).trim();
-      continue;
-    }
-
-    if (token.startsWith("offset:")) {
-      offsetExpression = token.slice(7).trim();
-      continue;
-    }
-
-    collectionTokens.push(token);
-  }
-
-  return {
-    itemName: tokens[1],
-    collectionPath: collectionTokens.join(" ").trim(),
-    limitExpression,
-    offsetExpression,
-    reversed,
-  };
-}
-
-function parseAssignExpression(expression = EMPTY_STRING) {
-  const [left, ...rest] = tokenize(expression, "=");
-  const valueExpression = rest.join("=").trim();
-  const tokens = tokenize(left || EMPTY_STRING, " ").filter(Boolean);
-  if (tokens[0] !== "assign" || tokens.length !== 2 || !valueExpression || !NAME_PATTERN.test(tokens[1])) {
-    return null;
-  }
-
-  return {
-    variableName: tokens[1],
-    valueExpression,
-  };
-}
-
-function parseCaptureExpression(expression = EMPTY_STRING) {
-  const tokens = tokenize(expression, " ").filter(Boolean);
-  if (tokens[0] !== "capture" || tokens.length !== 2 || !NAME_PATTERN.test(tokens[1])) {
-    return null;
-  }
-
-  return {
-    variableName: tokens[1],
-  };
-}
-
-function parseCounterExpression(expression = EMPTY_STRING) {
-  const tokens = tokenize(expression, " ").filter(Boolean);
-  if (
-    tokens.length !== 2 ||
-    (tokens[0] !== "increment" && tokens[0] !== "decrement") ||
-    !NAME_PATTERN.test(tokens[1])
-  ) {
-    return null;
-  }
-
-  return {
-    operation: tokens[0],
-    variableName: tokens[1],
-  };
-}
-
-function parseNamedArgument(expression = EMPTY_STRING) {
-  const [name, valueExpression] = splitFilterNameAndArguments(expression);
-  if (!name || !valueExpression) {
-    return null;
-  }
-
-  return {
-    name,
-    valueExpression,
-  };
-}
-
-function parsePartialExpression(expression = EMPTY_STRING) {
-  const segments = tokenize(expression, ",").filter(Boolean);
-  if (segments.length === 0) {
-    return {
-      snippetExpression: EMPTY_STRING,
-      argumentsList: [],
-    };
-  }
-
-  return {
-    snippetExpression: segments[0],
-    argumentsList: segments.slice(1)
-      .map((segment) => parseNamedArgument(segment))
-      .filter(Boolean),
-  };
-}
-
-function getNextLiquidMarker(text, startIndex) {
-  const nextVariable = text.indexOf(VARIABLE_OPEN, startIndex);
-  const nextBlock = text.indexOf(BLOCK_OPEN, startIndex);
-
-  if (nextVariable === -1) {
-    return nextBlock;
-  }
-
-  if (nextBlock === -1) {
-    return nextVariable;
-  }
-
-  return nextVariable < nextBlock ? nextVariable : nextBlock;
-}
-
-function readLiquidTag(text, startIndex, openToken, closeToken) {
-  let contentStart = startIndex + openToken.length;
-  let trimLeft = false;
-
-  if (text[contentStart] === "-") {
-    trimLeft = true;
-    contentStart += 1;
-  }
-
-  const closeIndex = text.indexOf(closeToken, contentStart);
-  if (closeIndex === -1) {
-    return null;
-  }
-
-  const trimRight = text[closeIndex - 1] === "-";
-  const contentEnd = trimRight ? closeIndex - 1 : closeIndex;
-
-  return {
-    raw: text.slice(startIndex, closeIndex + closeToken.length),
-    content: text.slice(contentStart, contentEnd).trim(),
-    endIndex: closeIndex + closeToken.length,
-    trimLeft,
-    trimRight,
-  };
-}
-
-function hasIncompleteLiquidTag(text = EMPTY_STRING) {
-  let cursor = 0;
-
-  while (cursor < text.length) {
-    const marker = getNextLiquidMarker(text, cursor);
-    if (marker === -1) {
-      return false;
-    }
-
-    const isVariable = text.startsWith(VARIABLE_OPEN, marker);
-    const tag = readLiquidTag(
-      text,
-      marker,
-      isVariable ? VARIABLE_OPEN : BLOCK_OPEN,
-      isVariable ? VARIABLE_CLOSE : BLOCK_CLOSE,
-    );
-
-    if (!tag) {
-      return true;
-    }
-
-    cursor = tag.endIndex;
-  }
-
-  return false;
-}
-
-function hasQuotedIncompleteLiquidTag(text = EMPTY_STRING) {
-  const marker = getNextLiquidMarker(text, 0);
-  if (marker === -1) {
-    return false;
-  }
-
-  const startIndex = text.lastIndexOf(VARIABLE_OPEN) > text.lastIndexOf(BLOCK_OPEN)
-    ? text.lastIndexOf(VARIABLE_OPEN)
-    : text.lastIndexOf(BLOCK_OPEN);
-  const fragment = startIndex === -1 ? text : text.slice(startIndex);
-  let quote = null;
-
-  for (let index = 0; index < fragment.length; index += 1) {
-    const char = fragment[index];
-    if ((char === '"' || char === "'") && !isEscaped(fragment, index) && (!quote || quote === char)) {
-      quote = quote === char ? null : char;
-    }
-  }
-
-  return Boolean(quote);
-}
-
-function serializeStartTag(element) {
-  const attributes = [...element.attributes]
-    .map(([name, value]) => (!value ? name : `${name}="${escapeAttribute(value)}"`))
-    .join(" ");
-
-  return attributes ? `<${element.tagName} ${attributes}>` : `<${element.tagName}>`;
-}
-
-function serializeEndTag(tagName) {
-  return `</${tagName}>`;
-}
-
-function isEscaped(text, index) {
-  let slashCount = 0;
-  for (let cursor = index - 1; cursor >= 0 && text[cursor] === "\\"; cursor -= 1) {
-    slashCount += 1;
-  }
-  return slashCount % 2 === 1;
-}
-
-function updateScanState(state, text, index) {
-  const char = text[index];
-
-  if ((char === '"' || char === "'") && !isEscaped(text, index) && (!state.quote || state.quote === char)) {
-    state.quote = state.quote === char ? null : char;
-    return;
-  }
-
-  if (state.quote) {
-    return;
-  }
-
-  if (char === "(") {
-    state.parenDepth += 1;
-  } else if (char === ")") {
-    state.parenDepth = Math.max(0, state.parenDepth - 1);
-  } else if (char === "[") {
-    state.squareDepth += 1;
-  } else if (char === "]") {
-    state.squareDepth = Math.max(0, state.squareDepth - 1);
-  } else if (char === "{") {
-    state.curlyDepth += 1;
-  } else if (char === "}") {
-    state.curlyDepth = Math.max(0, state.curlyDepth - 1);
-  }
-}
-
-function isTopLevel(state) {
-  return !state.quote && state.parenDepth === 0 && state.squareDepth === 0 && state.curlyDepth === 0;
-}
-
-function tokenize(expression = EMPTY_STRING, separator) {
-  const parts = [];
-  let current = EMPTY_STRING;
-  const state = {
-    quote: null,
-    parenDepth: 0,
-    squareDepth: 0,
-    curlyDepth: 0,
-  };
-
-  for (let index = 0; index < expression.length; index += 1) {
-    const char = expression[index];
-
-    if (isTopLevel(state) && expression.startsWith(separator, index)) {
-      parts.push(current.trim());
-      current = EMPTY_STRING;
-      index += separator.length - 1;
-      continue;
-    }
-
-    current += char;
-    updateScanState(state, expression, index);
-  }
-
-  parts.push(current.trim());
-  return parts;
-}
-
-function findTopLevelOperator(expression = EMPTY_STRING, operator) {
-  const state = {
-    quote: null,
-    parenDepth: 0,
-    squareDepth: 0,
-    curlyDepth: 0,
-  };
-
-  for (let index = 0; index < expression.length; index += 1) {
-    const char = expression[index];
-
-    if (isTopLevel(state) && expression.startsWith(operator, index)) {
-      return index;
-    }
-
-    updateScanState(state, expression, index);
-  }
-
-  return -1;
-}
-
-function splitFilterSegments(expression = EMPTY_STRING) {
-  return tokenize(expression, "|");
-}
-
-function splitFilterArguments(expression = EMPTY_STRING) {
-  return tokenize(expression, ",").filter(Boolean);
-}
-
-function splitFilterNameAndArguments(expression = EMPTY_STRING) {
-  let quote = null;
-
-  for (let index = 0; index < expression.length; index += 1) {
-    const char = expression[index];
-
-    if ((char === '"' || char === "'") && !isEscaped(expression, index) && (!quote || quote === char)) {
-      quote = quote === char ? null : char;
-      continue;
-    }
-
-    if (char === ":" && !quote) {
-      return [expression.slice(0, index).trim(), expression.slice(index + 1).trim()];
-    }
-  }
-
-  return [expression.trim(), EMPTY_STRING];
-}
-
-function splitRangeExpression(expression = EMPTY_STRING) {
-  const match = RANGE_PATTERN.exec(expression.trim());
-  if (!match) {
-    return null;
-  }
-
-  return {
-    start: match[1].trim(),
-    end: match[2].trim(),
-  };
-}
-
-function normalizeLiteralKey(key = EMPTY_STRING) {
-  const trimmed = key.trim();
-  if (
-    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-    (trimmed.startsWith("'") && trimmed.endsWith("'"))
-  ) {
-    return trimmed.slice(1, -1);
-  }
-
-  return trimmed;
-}
-
-function skipLeadingWhitespace(text, index) {
-  let cursor = index;
-
-  while (cursor < text.length && WHITESPACE_CHARACTERS.has(text[cursor])) {
-    cursor += 1;
-  }
-
-  return cursor;
-}
-
-function trimTrailingWhitespace(text) {
-  let cursor = text.length;
-
-  while (cursor > 0 && WHITESPACE_CHARACTERS.has(text[cursor - 1])) {
-    cursor -= 1;
-  }
-
-  return text.slice(0, cursor);
-}
-
-function parsePathSegments(expression = EMPTY_STRING) {
-  const segments = [];
-  let current = EMPTY_STRING;
-
-  for (let index = 0; index < expression.length; index += 1) {
-    const char = expression[index];
-
-    if (char === ".") {
-      if (current) {
-        segments.push(current);
-        current = EMPTY_STRING;
-      }
-      continue;
-    }
-
-    if (char === "[") {
-      if (current) {
-        segments.push(current);
-        current = EMPTY_STRING;
-      }
-
-      let quote = null;
-      let bracketContent = EMPTY_STRING;
-      let cursor = index + 1;
-
-      while (cursor < expression.length) {
-        const bracketChar = expression[cursor];
-
-        if ((bracketChar === '"' || bracketChar === "'") && (!quote || quote === bracketChar)) {
-          quote = quote === bracketChar ? null : bracketChar;
-          bracketContent += bracketChar;
-          cursor += 1;
-          continue;
-        }
-
-        if (bracketChar === "]" && !quote) {
-          break;
-        }
-
-        bracketContent += bracketChar;
-        cursor += 1;
-      }
-
-      if (cursor >= expression.length) {
-        return [expression];
-      }
-
-      const trimmed = bracketContent.trim();
-      if (
-        (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-        (trimmed.startsWith("'") && trimmed.endsWith("'"))
-      ) {
-        segments.push(trimmed.slice(1, -1));
-      } else if (NUMBER_PATTERN.test(trimmed)) {
-        segments.push(Number(trimmed));
-      } else if (trimmed) {
-        segments.push(trimmed);
-      }
-
-      index = cursor;
-      continue;
-    }
-
-    current += char;
-  }
-
-  if (current) {
-    segments.push(current);
-  }
-
-  return segments;
-}
-
-function resolvePathValue(value, segment) {
-  if (value === null || value === undefined) {
-    return undefined;
-  }
-
-  if (segment === "first" && (Array.isArray(value) || typeof value === "string")) {
-    return value[0];
-  }
-
-  if (segment === "last" && (Array.isArray(value) || typeof value === "string")) {
-    return value.length ? value[value.length - 1] : undefined;
-  }
-
-  return value?.[segment];
-}
-
-function isLiquidTruthy(value) {
-  return value !== false && value !== null && value !== undefined;
-}
-
-function parseTagInvocation(content = EMPTY_STRING) {
-  const separator = content.indexOf(" ");
-  if (separator === -1) {
-    return {
-      name: content.trim(),
-      expression: EMPTY_STRING,
-    };
-  }
-
-  return {
-    name: content.slice(0, separator).trim(),
-    expression: content.slice(separator + 1).trim(),
-  };
-}
-
-async function defaultYieldControl() {
+export async function defaultYieldControl() {
   if (globalThis.scheduler && typeof globalThis.scheduler.yield === "function") {
     await globalThis.scheduler.yield();
     return;
@@ -531,92 +58,102 @@ async function defaultYieldControl() {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-function createRuntime() {
-  return {
-    counters: Object.create(null),
-  };
-}
-
-function createHandlerState(scope, options = {}) {
-  return {
-    state: STATE_EMIT,
-    currentContext: scope,
-    textBufferParts: [],
-    inLiquidTag: false,
-    ifStack: [],
-    skipDepth: 0,
-    skipMode: null,
-    capture: null,
-    raw: null,
-    runtime: options.runtime || createRuntime(),
-    renderDepth: options.renderDepth || 0,
-  };
-}
-
-function createCaptureState(mode, options = {}) {
-  return {
-    mode,
-    itemName: options.itemName || null,
-    collection: options.collection || null,
-    variableName: options.variableName || null,
-    depth: 0,
-    bufferParts: [],
-  };
-}
-
-function appendCapturePart(capture, value) {
-  if (value) {
-    capture.bufferParts.push(value);
+function normalizeTagDefinition(name, tagDefinition) {
+  if (!tagDefinition || typeof tagDefinition !== "object") {
+    throw new TypeError(`Tag "${name}" must be a TagDefinition object`);
   }
-}
 
-function createRawState() {
-  return {
-    bufferParts: [],
-  };
-}
-
-function appendRawPart(raw, value) {
-  if (value) {
-    raw.bufferParts.push(value);
+  if (typeof tagDefinition.onEmit !== "function") {
+    throw new TypeError(`Tag "${name}" must define an onEmit(ctx) handler`);
   }
-}
 
-function createConditionalFrame(truthy, currentContext) {
   return {
-    type: "if",
-    truthy,
-    parentContext: currentContext,
-    branchContext: createScope(currentContext),
+    ...tagDefinition,
+    name: tagDefinition.name || name,
   };
 }
 
-function createCaseFrame(switchValue, currentContext) {
+function normalizeTagRegistry(tags = {}) {
+  const registry = Object.create(null);
+
+  for (const [name, tagDefinition] of Object.entries(tags)) {
+    registry[name] = normalizeTagDefinition(name, tagDefinition);
+  }
+
+  return registry;
+}
+
+function isSignal(value) {
+  return value && typeof value === "object" && typeof value.action === "string";
+}
+
+function normalizeLegacyTagResult(tagResult) {
+  if (isSignal(tagResult)) {
+    return tagResult;
+  }
+
+  if (tagResult && typeof tagResult === "object" && "output" in tagResult) {
+    return {
+      action: "OUTPUT",
+      output: tagResult.output,
+      html: Boolean(tagResult.html),
+    };
+  }
+
   return {
-    type: "case",
-    switchValue,
-    matched: false,
-    parentContext: currentContext,
-    branchContext: null,
+    action: "OUTPUT",
+    output: String(tagResult ?? EMPTY_STRING),
+    html: true,
   };
 }
 
-function createLoopMetadata(index, length) {
+function resolveScopeArgs(context, scopeOrOptions = {}, maybeOptions = {}) {
+  const looksLikeOptions = scopeOrOptions && typeof scopeOrOptions === "object" && "applyFilters" in scopeOrOptions;
+  if (looksLikeOptions) {
+    return {
+      scope: {},
+      options: scopeOrOptions,
+    };
+  }
+
   return {
-    index: index + 1,
-    index0: index,
-    first: index === 0,
-    last: index === length - 1,
-    length,
+    scope: scopeOrOptions || {},
+    options: maybeOptions || {},
   };
 }
 
-function evaluateWhenMatch(engine, expression, switchValue, context) {
-  const candidates = tokenize(expression, ",")
-    .flatMap((segment) => tokenize(segment, " "))
-    .filter((segment) => segment && segment !== "or");
-
-  return candidates.some((candidate) => engine.resolveValue(candidate, context) === switchValue);
+function createTagContext(engine, tag, expression, handler, block) {
+  return {
+    name: tag.name,
+    tag,
+    block,
+    expression,
+    markup: expression,
+    handler,
+    state: handler,
+    context: handler.currentContext,
+    engine,
+    evaluate: (condition, scope = {}) => engine.evaluateCondition(
+      condition,
+      Object.assign(createScope(handler.currentContext), scope),
+    ),
+    resolveValue: (valueExpression, context = handler.currentContext) => engine.resolveValue(valueExpression, context),
+    resolveForCollection: (loop, context = handler.currentContext) => engine.resolveForCollection(loop, context),
+    renderPartial: (partialExpression, currentHandler = handler, mode) => engine.renderPartial(partialExpression, currentHandler, mode),
+    resolveArgument: (argument, scope = {}) => engine.resolveExpression(
+      argument,
+      Object.assign(createScope(handler.currentContext), scope),
+      { applyFilters: false },
+    ),
+    resolveExpression: (argument, scopeOrOptions = {}, maybeOptions = {}) => {
+      const { scope, options } = resolveScopeArgs(handler.currentContext, scopeOrOptions, maybeOptions);
+      return engine.resolveExpression(
+        argument,
+        Object.assign(createScope(handler.currentContext), scope),
+        options,
+      );
+    },
+  };
 }
 
 export class Liquid {
@@ -634,7 +171,7 @@ export class Liquid {
     this.autoEscape = autoEscape;
     this.fetch = fetch || globalThis.fetch;
     this.filters = Object.assign(Object.create(FILTERS), filters);
-    this.tags = Object.assign(Object.create(null), tags);
+    this.tags = Object.assign(Object.create(null), coreTags, normalizeTagRegistry(tags));
     this.yieldAfter = yieldAfter;
     this.yieldControl = yieldControl || defaultYieldControl;
   }
@@ -643,8 +180,8 @@ export class Liquid {
     this.filters[name] = filter;
   }
 
-  registerTag(name, handler) {
-    this.tags[name] = handler;
+  registerTag(name, tagDefinition) {
+    this.tags[name] = normalizeTagDefinition(name, tagDefinition);
   }
 
   plugin(plugin) {
@@ -1110,192 +647,34 @@ export class Liquid {
       }
 
       cursor = block.trimRight ? skipLeadingWhitespace(text, block.endIndex) : block.endIndex;
-
-      if (block.content.startsWith("if ") || block.content.startsWith("unless ")) {
-        const isUnless = block.content.startsWith("unless ");
-        const condition = isUnless ? block.content.slice(7).trim() : block.content.slice(3).trim();
-        const truthy = isUnless
-          ? !this.evaluateCondition(condition, handler.currentContext)
-          : this.evaluateCondition(condition, handler.currentContext);
-        const frame = createConditionalFrame(truthy, handler.currentContext);
-        handler.ifStack.push(frame);
-
-        if (!truthy) {
-          handler.state = STATE_SKIP;
-          handler.skipDepth = 1;
-          handler.skipMode = "if_false";
-          output.push(await this.processText(text.slice(cursor), handler));
-          return output.join(EMPTY_STRING);
-        }
-
-        handler.currentContext = frame.branchContext;
-        continue;
-      }
-
-      if (block.content.startsWith("case ")) {
-        handler.ifStack.push(
-          createCaseFrame(
-            this.resolveValue(block.content.slice(5).trim(), handler.currentContext),
-            handler.currentContext,
-          ),
-        );
-        handler.state = STATE_SKIP;
-        handler.skipDepth = 1;
-        handler.skipMode = "case_search";
-        output.push(await this.processText(text.slice(cursor), handler));
-        return output.join(EMPTY_STRING);
-      }
-
-      if (block.content.startsWith("assign ")) {
-        const assignment = parseAssignExpression(block.content);
-        if (assignment) {
-          handler.currentContext[assignment.variableName] = this.resolveValue(
-            assignment.valueExpression,
-            handler.currentContext,
-          );
-        }
-        continue;
-      }
-
-      if (block.content.startsWith("increment ") || block.content.startsWith("decrement ")) {
-        const counter = parseCounterExpression(block.content);
-        if (counter) {
-          const current = handler.runtime.counters[counter.variableName];
-
-          if (counter.operation === "increment") {
-            const outputValue = current === undefined ? 0 : current;
-            handler.runtime.counters[counter.variableName] = outputValue + 1;
-            output.push(String(outputValue));
-          } else {
-            const outputValue = current === undefined ? -1 : current - 1;
-            handler.runtime.counters[counter.variableName] = outputValue;
-            output.push(String(outputValue));
-          }
-        }
-        continue;
-      }
-
-      if (block.content.startsWith("when ")) {
-        const current = handler.ifStack.at(-1);
-        if (current?.type === "case" && current.matched) {
-          handler.state = STATE_SKIP;
-          handler.skipDepth = 1;
-          handler.skipMode = "case_done";
-          output.push(await this.processText(text.slice(cursor), handler));
-          return output.join(EMPTY_STRING);
-        }
-        continue;
-      }
-
-      if (block.content === "else") {
-        const current = handler.ifStack.at(-1);
-        if (current?.type === "case") {
-          if (current.matched) {
-            handler.state = STATE_SKIP;
-            handler.skipDepth = 1;
-            handler.skipMode = "case_done";
-            output.push(await this.processText(text.slice(cursor), handler));
-            return output.join(EMPTY_STRING);
-          }
-
-          current.matched = true;
-          current.branchContext = createScope(current.parentContext);
-          handler.currentContext = current.branchContext;
-          continue;
-        }
-
-        if (current?.truthy) {
-          handler.state = STATE_SKIP;
-          handler.skipDepth = 1;
-          handler.skipMode = "else_branch";
-          output.push(await this.processText(text.slice(cursor), handler));
-          return output.join(EMPTY_STRING);
-        }
-
-        if (current) {
-          handler.currentContext = current.branchContext;
-        }
-        continue;
-      }
-
-      if (block.content === "endcase") {
-        const frame = handler.ifStack.pop();
-        handler.currentContext = frame?.parentContext || handler.currentContext;
-        continue;
-      }
-
-      if (block.content === "endif") {
-        const frame = handler.ifStack.pop();
-        handler.currentContext = frame?.parentContext || handler.currentContext;
-        continue;
-      }
-
-      if (block.content.startsWith("for ")) {
-        const loop = parseForExpression(block.content);
-        const collection = loop ? this.resolveForCollection(loop, handler.currentContext) : [];
-
-        handler.state = STATE_CAPTURE;
-        handler.capture = createCaptureState("for", {
-          itemName: loop?.itemName || EMPTY_STRING,
-          collection,
-        });
-
-        output.push(await this.processText(text.slice(cursor), handler));
-        return output.join(EMPTY_STRING);
-      }
-
-      if (block.content.startsWith("capture ")) {
-        const capture = parseCaptureExpression(block.content);
-
-        handler.state = STATE_CAPTURE;
-        handler.capture = createCaptureState("capture", {
-          variableName: capture?.variableName || EMPTY_STRING,
-        });
-
-        output.push(await this.processText(text.slice(cursor), handler));
-        return output.join(EMPTY_STRING);
-      }
-
-      if (block.content === "raw") {
-        handler.state = STATE_RAW;
-        handler.raw = createRawState();
-        output.push(await this.processText(text.slice(cursor), handler));
-        return output.join(EMPTY_STRING);
-      }
-
-      if (block.content.startsWith("render ")) {
-        output.push(await this.renderPartial(block.content.slice(7).trim(), handler, "render"));
-        continue;
-      }
-
-      if (block.content.startsWith("include ")) {
-        output.push(await this.renderPartial(block.content.slice(8).trim(), handler, "include"));
-        continue;
-      }
-
       const { name, expression } = parseTagInvocation(block.content);
-      const customTag = this.tags[name];
-      if (customTag) {
-        const tagResult = await customTag({
-          context: handler.currentContext,
-          engine: this,
-          expression,
-          markup: expression,
-          resolveArgument: (argument) => this.resolveExpression(argument, handler.currentContext, { applyFilters: false }),
-          resolveExpression: (argument, options = {}) => this.resolveExpression(argument, handler.currentContext, options),
-          state: handler,
-        });
+      const tag = this.tags[name];
+      if (!tag) {
+        continue;
+      }
 
-        if (tagResult && typeof tagResult === "object" && "output" in tagResult) {
-          output.push(
-            tagResult.html
-              ? String(tagResult.output ?? EMPTY_STRING)
-              : this.renderResolvedValue(tagResult.output),
-          );
-          continue;
-        }
+      const ctx = createTagContext(this, tag, expression, handler, block);
+      const tagResult = await tag.onEmit(ctx);
+      const signal = normalizeLegacyTagResult(tagResult);
 
-        output.push(String(tagResult ?? EMPTY_STRING));
+      applySignal(signal, handler);
+
+      if (signal.action === "OUTPUT") {
+        output.push(
+          signal.html
+            ? String(signal.output ?? EMPTY_STRING)
+            : this.renderResolvedValue(signal.output),
+        );
+        continue;
+      }
+
+      if (signal.action === "SKIP" || signal.action === "CAPTURE" || signal.action === "RAW") {
+        output.push(await this.processText(text.slice(cursor), handler));
+        return output.join(EMPTY_STRING);
+      }
+
+      if (signal.action === "BREAK") {
+        return output.join(EMPTY_STRING);
       }
     }
 
@@ -1317,83 +696,31 @@ export class Liquid {
       }
 
       cursor = block.endIndex;
-
-      if (
-        block.content.startsWith("if ") ||
-        block.content.startsWith("unless ") ||
-        block.content.startsWith("case ")
-      ) {
-        handler.skipDepth += 1;
+      const { name, expression } = parseTagInvocation(block.content);
+      const tag = this.tags[name];
+      if (!tag?.onSkip) {
         continue;
       }
 
-      if (
-        block.content.startsWith("when ") &&
-        handler.skipDepth === 1 &&
-        handler.skipMode === "case_search"
-      ) {
-        const frame = handler.ifStack.at(-1);
-        if (
-          frame?.type === "case" &&
-          !frame.matched &&
-          evaluateWhenMatch(this, block.content.slice(5).trim(), frame.switchValue, handler.currentContext)
-        ) {
-          frame.matched = true;
-          frame.branchContext = createScope(frame.parentContext);
-          handler.currentContext = frame.branchContext;
-          handler.state = STATE_EMIT;
-          handler.skipDepth = 0;
-          handler.skipMode = null;
-          return this.processEmitText(text.slice(block.trimRight ? skipLeadingWhitespace(text, cursor) : cursor), handler);
-        }
+      const ctx = createTagContext(this, tag, expression, handler, block);
+      const signal = tag.onSkip(ctx);
+      if (!signal) {
         continue;
       }
 
-      if (block.content === "else" && handler.skipDepth === 1 && handler.skipMode === "if_false") {
-        handler.state = STATE_EMIT;
-        handler.skipDepth = 0;
-        handler.skipMode = null;
-        const frame = handler.ifStack.at(-1);
-        handler.currentContext = frame?.branchContext || handler.currentContext;
-        return this.processEmitText(text.slice(block.trimRight ? skipLeadingWhitespace(text, cursor) : cursor), handler);
-      }
+      applySignal(signal, handler);
 
-      if (block.content === "else" && handler.skipDepth === 1 && handler.skipMode === "case_search") {
-        const frame = handler.ifStack.at(-1);
-        if (frame?.type === "case" && !frame.matched) {
-          frame.matched = true;
-          frame.branchContext = createScope(frame.parentContext);
-          handler.currentContext = frame.branchContext;
-          handler.state = STATE_EMIT;
-          handler.skipDepth = 0;
-          handler.skipMode = null;
-          return this.processEmitText(text.slice(block.trimRight ? skipLeadingWhitespace(text, cursor) : cursor), handler);
-        }
+      if (signal.action === "NEST") {
         continue;
       }
 
-      if (block.content === "endif") {
-        handler.skipDepth -= 1;
-
-        if (handler.skipDepth === 0) {
-          const frame = handler.ifStack.pop();
-          handler.currentContext = frame?.parentContext || handler.currentContext;
-          handler.state = STATE_EMIT;
-          handler.skipMode = null;
-          return this.processEmitText(text.slice(block.trimRight ? skipLeadingWhitespace(text, cursor) : cursor), handler);
-        }
+      if (signal.action === "RESUME_EMIT") {
+        const resumeCursor = getResumeCursor(text, cursor, block);
+        return this.processEmitText(text.slice(resumeCursor), handler);
       }
 
-      if (block.content === "endcase") {
-        handler.skipDepth -= 1;
-
-        if (handler.skipDepth === 0) {
-          const frame = handler.ifStack.pop();
-          handler.currentContext = frame?.parentContext || handler.currentContext;
-          handler.state = STATE_EMIT;
-          handler.skipMode = null;
-          return this.processEmitText(text.slice(block.trimRight ? skipLeadingWhitespace(text, cursor) : cursor), handler);
-        }
+      if (signal.action === "BREAK") {
+        return EMPTY_STRING;
       }
     }
 
@@ -1420,11 +747,15 @@ export class Liquid {
       cursor = block.endIndex;
 
       if (block.content === "endraw") {
+        if (block.trimLeft) {
+          trimBufferedTrailingWhitespace(handler.raw.bufferParts);
+        }
+
         const rawContent = handler.raw.bufferParts.join(EMPTY_STRING);
         handler.state = STATE_EMIT;
         handler.raw = null;
         return rawContent + await this.processEmitText(
-          text.slice(block.trimRight ? skipLeadingWhitespace(text, cursor) : cursor),
+          text.slice(getResumeCursor(text, cursor, block)),
           handler,
         );
       }
@@ -1473,10 +804,14 @@ export class Liquid {
           continue;
         }
 
+        if (block.trimLeft) {
+          trimBufferedTrailingWhitespace(handler.capture.bufferParts);
+        }
+
         const rendered = await this.renderCapture(handler);
         handler.state = STATE_EMIT;
         handler.capture = null;
-        return rendered + await this.processEmitText(text.slice(cursor), handler);
+        return rendered + await this.processEmitText(text.slice(getResumeCursor(text, cursor, block)), handler);
       }
 
       appendCapturePart(handler.capture, block.raw);
@@ -1486,34 +821,7 @@ export class Liquid {
   }
 
   async renderCapture(handler) {
-    const fragment = handler.capture.bufferParts.join(EMPTY_STRING);
-
-    if (handler.capture.mode === "capture") {
-      handler.currentContext[handler.capture.variableName] = await this.renderFragment(
-        fragment,
-        createScope(handler.currentContext),
-        handler.runtime,
-        handler.renderDepth,
-      );
-      return EMPTY_STRING;
-    }
-
-    const output = [];
-    const length = handler.capture.collection.length;
-
-    for (let index = 0; index < length; index += 1) {
-      if (this.yieldAfter > 0 && index > 0 && index % this.yieldAfter === 0) {
-        await this.yieldControl();
-      }
-
-      const item = handler.capture.collection[index];
-      const loopScope = createScope(handler.currentContext);
-      loopScope[handler.capture.itemName] = item;
-      loopScope.forloop = createLoopMetadata(index, length);
-      output.push(await this.renderFragment(fragment, loopScope, handler.runtime, handler.renderDepth));
-    }
-
-    return output.join(EMPTY_STRING);
+    return renderCapture(this, handler);
   }
 
   async renderFragment(fragment, context = {}, runtime = createRuntime(), renderDepth = 0) {

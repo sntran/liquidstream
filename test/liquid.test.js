@@ -545,8 +545,11 @@ describe("Liquid Streaming State Machine", () => {
   it("supports custom tags from constructor options", async () => {
     const engine = new Liquid({
       tags: {
-        echo_upper({ expression, resolveExpression }) {
-          return String(resolveExpression(expression, { applyFilters: false })).toUpperCase();
+        echo_upper: {
+          name: "echo_upper",
+          onEmit({ expression, resolveExpression }) {
+            return String(resolveExpression(expression, { applyFilters: false })).toUpperCase();
+          },
         },
       },
     });
@@ -559,8 +562,11 @@ describe("Liquid Streaming State Machine", () => {
   it("supports custom tags that return explicit html output", async () => {
     const engine = new Liquid({
       tags: {
-        raw_box() {
-          return { output: "<strong>hi</strong>", html: true };
+        raw_box: {
+          name: "raw_box",
+          onEmit() {
+            return { output: "<strong>hi</strong>", html: true };
+          },
         },
       },
     });
@@ -591,21 +597,48 @@ describe("Liquid Streaming State Machine", () => {
 
   it("supports custom tags that return escaped output objects", async () => {
     const engine = new Liquid();
-    engine.registerTag("safe_box", () => ({
-      output: "<strong>hi</strong>",
-      html: false,
-    }));
+    engine.registerTag("safe_box", {
+      name: "safe_box",
+      onEmit() {
+        return {
+          output: "<strong>hi</strong>",
+          html: false,
+        };
+      },
+    });
 
     const html = await engine.parseAndRender("{% safe_box %}", {});
 
     assert.equal(html, "&lt;strong&gt;hi&lt;/strong&gt;");
   });
 
+  it("requires object-based tag definitions", () => {
+    assert.throws(
+      () => new Liquid({
+        tags: {
+          old_style() {
+            return "legacy";
+          },
+        },
+      }),
+      /Tag "old_style" must be a TagDefinition object/,
+    );
+
+    const engine = new Liquid();
+    assert.throws(
+      () => engine.registerTag("legacy", () => "legacy"),
+      /Tag "legacy" must be a TagDefinition object/,
+    );
+  });
+
   it("passes resolveArgument into custom tags", async () => {
     const engine = new Liquid({
       tags: {
-        echo_arg({ expression, resolveArgument }) {
-          return resolveArgument(expression);
+        echo_arg: {
+          name: "echo_arg",
+          onEmit({ expression, resolveArgument }) {
+            return resolveArgument(expression);
+          },
         },
       },
     });
@@ -618,11 +651,17 @@ describe("Liquid Streaming State Machine", () => {
   it("handles custom tags with nullish outputs", async () => {
     const engine = new Liquid({
       tags: {
-        empty_html() {
-          return { output: undefined, html: true };
+        empty_html: {
+          name: "empty_html",
+          onEmit() {
+            return { output: undefined, html: true };
+          },
         },
-        empty_text() {
-          return undefined;
+        empty_text: {
+          name: "empty_text",
+          onEmit() {
+            return undefined;
+          },
         },
       },
     });
@@ -1128,5 +1167,38 @@ describe("Liquid Streaming State Machine", () => {
 
     assert.equal(endifOutput, "after");
     assert.equal(loopOutput, "");
+  });
+
+  it("does not strand nested skipped blocks after endfor", async () => {
+    const engine = new Liquid();
+
+    const html = await engine.parseAndRender(
+      "{% if false %}A{% for x in items %}B{% endfor %}C{% endif %}D",
+      { items: [1, 2, 3] },
+    );
+
+    assert.equal(html, "D");
+  });
+
+  it("applies trimLeft and trimRight correctly when leaving capture mode", async () => {
+    const engine = new Liquid();
+
+    const html = await engine.parseAndRender(
+      "{% capture note %}A {%- endcapture -%} {{ note }}",
+      {},
+    );
+
+    assert.equal(html, "A");
+  });
+
+  it("applies trimLeft and trimRight correctly when leaving raw mode", async () => {
+    const engine = new Liquid();
+
+    const html = await engine.parseAndRender(
+      "{% raw %}A {%- endraw -%} B",
+      {},
+    );
+
+    assert.equal(html, "AB");
   });
 });
