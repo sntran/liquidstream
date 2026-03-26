@@ -1,6 +1,6 @@
 import { marked } from "marked";
-import { Liquid } from "./src/index.js";
-import jekyll from "./src/plugins/jekyll.js";
+import { Liquid } from "./lib/mod.js";
+import jekyll from "./lib/plugins/jekyll.js";
 
 const HTML_HEADERS = {
   "content-type": "text/html; charset=utf-8",

@@ -1,21 +1,20 @@
 {
   "name": "@sntran/liquidstream",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A lightweight Liquid subset renderer built on HTMLRewriter for Cloudflare Workers and Node.js.",
   "type": "module",
-  "main": "./src/index.js",
+  "main": "./lib/mod.js",
   "exports": {
-    ".": "./src/index.js",
-    "./jekyll": "./src/plugins/jekyll.js"
+    ".": "./lib/mod.js",
+    "./jekyll": "./lib/plugins/jekyll.js"
   },
   "files": [
-    "src",
+    "lib",
     "README.md"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sntran/liquidstream.git",
-    "directory": "packages/liquid-html-rewriter"
+    "url": "git+https://github.com/sntran/liquidstream.git"
   },
   "homepage": "https://github.com/sntran/liquidstream/",
   "bugs": {
@@ -25,6 +24,7 @@
   "scripts": {
     "start": "npx -y wrangler pages dev .",
     "test": "node scripts/run-tests.mjs",
+    "build": "esbuild lib/mod.js --bundle --format=esm --outfile=dist/liquidstream.js --sourcemap --target=es2020 --platform=node && esbuild lib/mod.js --bundle --format=esm --outfile=dist/liquidstream.min.js --sourcemap --minify --target=es2020 --platform=node",
     "coverage": "c8 --reporter=text --include=src/index.js node scripts/run-tests.mjs",
     "benchmark": "node --expose-gc --experimental-wasm-jspi scripts/benchmark-liquid.mjs"
   },
@@ -43,6 +43,7 @@
   },
   "devDependencies": {
     "c8": "^11.0.0",
+    "esbuild": "^0.27.4",
     "fast-check": "^4.6.0",
     "liquidjs": "^10.25.0",
     "marked": "^16.4.0"
