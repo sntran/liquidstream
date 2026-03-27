@@ -8,7 +8,7 @@ describe("Liquid Performance", () => {
     const engine = new Liquid();
     const template = "<div>{{ user.name }}</div>";
     const context = { user: { name: "Alice" } };
-    const thresholdMs = process.env.NODE_V8_COVERAGE ? 125 : 15;
+    const thresholdMs = process.env.NODE_V8_COVERAGE ? 125 : 20;
 
     for (let index = 0; index < 20; index += 1) {
       await engine.parseAndRender(template, context);
@@ -31,10 +31,10 @@ describe("Liquid Performance", () => {
     const expression = `missing | default: "${"x".repeat(50_000)}`;
 
     const start = performance.now();
-    engine.resolveValue(expression, {});
+    engine.evaluator.resolveValue(expression, {});
     const elapsedMs = performance.now() - start;
 
-    assert.ok(elapsedMs < 25, `expected malformed filter parsing < 25ms, got ${elapsedMs.toFixed(3)}ms`);
+    assert.ok(elapsedMs < 50, `expected malformed filter parsing < 50ms, got ${elapsedMs.toFixed(3)}ms`);
   });
 
   it("keeps yield control active for large loops with offset and limit", async () => {

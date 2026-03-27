@@ -112,7 +112,7 @@ describe("Liquid Partials", () => {
       fetch: createMockFetch({}),
     });
 
-    const html = await engine.renderPartial("", {
+    const html = await engine.evaluator.renderPartial("", {
       currentContext: {},
       runtime: { counters: Object.create(null) },
       renderDepth: 0,

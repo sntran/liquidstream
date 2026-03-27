@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const testFiles = [
   "test/liquid.test.js",
+  "test/tags.test.js",
   "test/logic.test.js",
   "test/partials.test.js",
   "test/filters.test.js",

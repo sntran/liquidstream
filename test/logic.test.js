@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
 import { Liquid } from "../lib/mod.js";
+import { processEmitText, processRawText, processSkipText } from "../lib/rewriter.js";
 
 describe("Liquid Logic Parity", () => {
   it("supports case/when/else branches", async () => {
@@ -131,7 +132,7 @@ describe("Liquid Logic Parity", () => {
       raw: null,
       runtime: { counters: Object.create(null) },
     };
-    const matchedOutput = await engine.processEmitText('{% when "b" %}ignored{% endcase %}', matchedState);
+    const matchedOutput = await processEmitText(engine, '{% when "b" %}ignored{% endcase %}', matchedState);
 
     const unmatchedState = {
       state: "EMIT",
@@ -144,7 +145,7 @@ describe("Liquid Logic Parity", () => {
       raw: null,
       runtime: { counters: Object.create(null) },
     };
-    const elseOutput = await engine.processEmitText("{% else %}fallback", unmatchedState);
+    const elseOutput = await processEmitText(engine, "{% else %}fallback", unmatchedState);
 
     const skipState = {
       state: "SKIP",
@@ -157,8 +158,8 @@ describe("Liquid Logic Parity", () => {
       raw: null,
       runtime: { counters: Object.create(null) },
     };
-    const skippedElse = await engine.processSkipText("{% else %}", skipState);
-    const strayWhen = await engine.processEmitText('{% when "x" %}still-here', {
+    const skippedElse = await processSkipText(engine, "{% else %}", skipState);
+    const strayWhen = await processEmitText(engine, '{% when "x" %}still-here', {
       state: "EMIT",
       currentContext: {},
       textBufferParts: [],
@@ -191,7 +192,7 @@ describe("Liquid Logic Parity", () => {
       runtime: { counters: Object.create(null) },
     };
 
-    const malformed = await engine.processRawText("{% if", handler);
+    const malformed = await processRawText(engine, "{% if", handler);
 
     const rendered = await engine.parseAndRender(
       "{% raw %}{% if condition %}literal{% endraw %}",
@@ -243,7 +244,7 @@ describe("Liquid Logic Parity", () => {
   it("handles malformed counter expressions and invalid ranges defensively", async () => {
     const engine = new Liquid();
 
-    const malformedCounter = await engine.processEmitText("{% increment bad-name %}", {
+    const malformedCounter = await processEmitText(engine, "{% increment bad-name %}", {
       state: "EMIT",
       currentContext: {},
       textBufferParts: [],
@@ -254,7 +255,7 @@ describe("Liquid Logic Parity", () => {
       raw: null,
       runtime: { counters: Object.create(null) },
     });
-    const invalidRange = engine.resolveArgument("(start..2)", { start: "oops" });
+    const invalidRange = engine.evaluator.resolveArgument("(start..2)", { start: "oops" });
 
     assert.equal(malformedCounter, "");
     assert.deepEqual(invalidRange, []);

@@ -1,11 +1,11 @@
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
 
-import { caseTag, elseTag, elsif, ifTag, when } from "../src/tags/flow.js";
-import { coreTags } from "../src/tags/index.js";
-import { forTag, parseForExpression } from "../src/tags/iteration.js";
-import { OUTPUT, RESUME_EMIT, SKIP, applySignal } from "../src/tags/signals.js";
-import { assign, parseAssignExpression } from "../src/tags/variable.js";
+import { caseTag, elseTag, elsif, ifTag, when } from "../lib/tags/flow.js";
+import { coreTags } from "../lib/tags.js";
+import { forTag, parseForExpression } from "../lib/tags/iteration.js";
+import { OUTPUT, RESUME_EMIT, SKIP, applySignal } from "../lib/tags/signals.js";
+import { assign, parseAssignExpression } from "../lib/tags/variable.js";
 
 describe("tag modules", () => {
   it("exports the core tag registry", () => {
@@ -17,7 +17,7 @@ describe("tag modules", () => {
     assert.equal(coreTags.assign, assign);
   });
 
-  it("keeps elsif from double-firing once a branch matched", () => {
+  it("keeps elsif from double-firing once a branch matched", async () => {
     const parentContext = { value: 1 };
     const handler = {
       state: "SKIP",
@@ -32,7 +32,7 @@ describe("tag modules", () => {
       }],
     };
 
-    const signal = elsif.onSkip({
+    const signal = await elsif.onSkip({
       expression: "value == 1",
       handler,
       evaluate: () => true,
@@ -45,7 +45,7 @@ describe("tag modules", () => {
     assert.equal(handler.skipMode, null);
     assert.equal(handler.ifStack.at(-1).truthy, true);
 
-    const secondSignal = elsif.onSkip({
+    const secondSignal = await elsif.onSkip({
       expression: "value == 1",
       handler,
       evaluate: () => true,

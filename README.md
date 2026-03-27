@@ -646,12 +646,6 @@ Custom tags are useful when filter chains stop being expressive enough and you w
 
 Runs a Liquid-style plugin against the current engine instance and returns the same instance for chaining.
 
-### `createHandler(context)`
-
-Returns the low-level `HTMLRewriter` handlers used internally for `element` and `text` processing.
-
-Most users will never need this directly, but it is useful for testing, inspection, and lower-level integration work.
-
 ## Rendering behavior
 
 There are a few practical rules worth knowing when you build with `liquidstream`:
@@ -669,12 +663,13 @@ Those constraints are deliberate. They keep the engine easier to reason about in
 
 Current benchmark snapshot from this repository:
 
-- gzipped ESM entry: `8877 B`
-- gzipped minified bundle: `14973 B`
-- simple `transform()` average, 26 B template: `1.115 ms`
-- first byte, static-prefix template, median: `2.862 ms`
-- first byte, filter-dependent template, median: `0.289 ms`
-- heavy 1 MB `transform()`: `45.405 ms`
+- gzipped worker entry: `1702 B`
+- gzipped worker bundle: `16802 B`
+- gzipped LiquidJS browser bundle for comparison: `35788 B`
+- simple `transform()` average, 26 B template: `0.557 ms`
+- first byte, static-prefix template, median: `2.601 ms`
+- first byte, filter-dependent template, median: `0.351 ms`
+- heavy 1 MB `transform()`: `32.577 ms`
 
 These numbers come from [`scripts/benchmark-liquid.mjs`](./scripts/benchmark-liquid.mjs) and are better read as directional guidance than a universal speed claim.
 
@@ -686,11 +681,26 @@ The benchmark now measures the public `transform()` API directly. The important 
 
 Issues, bug reports, test cases, and focused patches are all welcome. The project is still intentionally small, so code clarity and runtime behavior matter at least as much as feature count.
 
+The current implementation is easiest to navigate if you keep the module ownership split in mind:
+
+- [`lib/mod.js`](./lib/mod.js) is the public facade and composition root
+- [`lib/rewriter.js`](./lib/rewriter.js) owns the streaming rewrite flow and render-state machine
+- [`lib/evaluator.js`](./lib/evaluator.js) owns expression, condition, and partial resolution
+- [`lib/tag.js`](./lib/tag.js) owns tag runtime objects and shared tag-side helpers
+- [`lib/tags/`](./lib/tags/) contains the built-in tag semantics
+
 Contributions are especially helpful in these areas:
 
 - compatibility bugs in supported Liquid syntax
 - small, well-tested filter or tag additions
 - performance improvements that preserve the streaming model
 - documentation improvements with concrete examples
+
+As a rule of thumb when adding code:
+
+- add or change built-in tag behavior in [`lib/tags/`](./lib/tags/)
+- add tag-side runtime helpers in [`lib/tag.js`](./lib/tag.js)
+- add expression or condition behavior in [`lib/evaluator.js`](./lib/evaluator.js)
+- add streaming or state-machine behavior in [`lib/rewriter.js`](./lib/rewriter.js)
 
 If you propose a new feature, it helps to explain how it fits the project’s core goals: HTML-first rendering, edge-friendly runtime behavior, and a compact implementation that stays understandable.

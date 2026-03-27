@@ -83,9 +83,9 @@ describe("Liquid Property-Based Tests", () => {
         fc.array(fc.integer({ min: 0, max: 200 }), { maxLength: 32 }),
         async (template, context, splitPoints) => {
           const engine = new Liquid();
-          const single = await chunkText(engine.createHandler(context), template, []);
+          const single = await chunkText(engine.rewriter.createHandler(context), template, []);
           const chunked = await chunkText(
-            engine.createHandler(context),
+            engine.rewriter.createHandler(context),
             template,
             splitPoints.map((point) => (template.length === 0 ? 0 : point % template.length)),
           );
@@ -127,7 +127,7 @@ describe("Liquid Property-Based Tests", () => {
           circular.self = circular;
 
           assert.doesNotThrow(() => resolvePathValue(context, segment));
-          assert.doesNotThrow(() => engine.resolveExpression(expression, circular));
+          assert.doesNotThrow(() => engine.evaluator.resolveExpression(expression, circular));
         },
       ),
       { numRuns: 200 },

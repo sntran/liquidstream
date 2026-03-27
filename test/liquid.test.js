@@ -1,6 +1,9 @@
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
 import { Liquid, UNHANDLED } from "../lib/mod.js";
+import { LiquidTag, createTagContext, createRenderScope, evaluateCondition as evaluateConditionHelper, resolveForCollection as resolveForCollectionHelper } from "../lib/tag.js";
+import { LiquidRewriter, createHandlerState, createRuntime, interpolate, normalizeLegacyTagResult, processCaptureText, processEmitText, processRawText, processSkipText } from "../lib/rewriter.js";
+import { OUTPUT, SKIP } from "../lib/tags/signals.js";
 
 describe("Liquid Streaming State Machine", () => {
   it("wraps the input in a Response and passes it through HTMLRewriter", async () => {
@@ -194,7 +197,7 @@ describe("Liquid Streaming State Machine", () => {
 
   it("buffers split chunks until the text node is complete", async () => {
     const engine = new Liquid();
-    const handler = engine.createHandler({
+    const handler = engine.rewriter.createHandler({
       user: { name: "Alice" },
       greeting: "Hello",
     });
@@ -227,9 +230,138 @@ describe("Liquid Streaming State Machine", () => {
     assert.deepEqual(options, { html: true });
   });
 
+  it("shares tag helper behavior across evaluate and loop collection adapters", async () => {
+    const handler = {
+      currentContext: { limit: 2, items: [1, 2, 3] },
+    };
+
+    assert.equal(await evaluateConditionHelper({
+      handler,
+      evaluate: async (expression) => expression === "limit == 2",
+    }, "limit == 2"), true);
+
+    assert.deepEqual(await resolveForCollectionHelper({
+      handler,
+      resolveForCollection: async (loop) => loop.collectionPath === "items" ? [2, 3] : [],
+    }, { collectionPath: "items" }), [2, 3]);
+  });
+
+  it("creates a consistent tag context and normalizes legacy tag results", async () => {
+    const engine = new Liquid();
+    const execution = engine.rewriter.createExecutionContext(new Response(""));
+    const handler = createHandlerState(createRenderScope({ count: 3 }), {
+      runtime: createRuntime(),
+      execution,
+    });
+    const tag = { name: "demo", onEmit() {} };
+    const ctx = createTagContext(engine, tag, "count", handler, null);
+
+    assert.ok(ctx instanceof LiquidTag);
+    assert.equal(typeof ctx.render, "function");
+    assert.equal(await ctx.resolveValue("count"), 3);
+    assert.equal(normalizeLegacyTagResult(OUTPUT("ok", { html: true })).action, "OUTPUT");
+    assert.deepEqual(normalizeLegacyTagResult(SKIP({ skipDepth: 1 })), SKIP({ skipDepth: 1 }));
+    assert.deepEqual(normalizeLegacyTagResult({ output: "legacy", html: false }), {
+      action: "OUTPUT",
+      output: "legacy",
+      html: false,
+    });
+  });
+
+  it("wires evaluator and rewriter without a circular collaborator reference", () => {
+    const engine = new Liquid();
+
+    assert.equal(typeof engine.evaluator.filters.default, "function");
+    assert.equal(typeof engine.evaluator.renderFragment, "function");
+    assert.equal(engine.evaluator.tags, engine.rewriter.tags);
+    assert.equal(engine.rewriter.handlers, engine.evaluator.handlers);
+  });
+
+  it("supports hook-based output and tag handling without an evaluator dependency on the rewriter", async () => {
+    const rewriter = new LiquidRewriter({ autoEscape: false });
+    const seen = {};
+
+    rewriter.on("{{ * }}", {
+      output(markup, runtime) {
+        seen.output = {
+          expression: markup.expression,
+          raw: markup.raw,
+          trimLeft: markup.trimLeft,
+          trimRight: markup.trimRight,
+          replace: typeof markup.replace,
+        };
+        markup.replace(runtime.context[markup.expression.trim()]);
+      },
+    });
+
+    rewriter.on("{% echo %}", {
+      element(markup) {
+        seen.tag = {
+          name: markup.name,
+          args: markup.args,
+          raw: markup.raw,
+          trimLeft: markup.trimLeft,
+          trimRight: markup.trimRight,
+          replace: typeof markup.replace,
+          remove: typeof markup.remove,
+        };
+        markup.replace(markup.args.trim().toUpperCase());
+      },
+    });
+
+    assert.equal(await rewriter.renderFragment("Hello {{- name -}}", { name: "Ada" }), "HelloAda");
+    assert.equal(await rewriter.renderFragment("{% echo hello %}", {}), "HELLO");
+    assert.deepEqual(seen.output, {
+      expression: "name",
+      raw: "{{- name -}}",
+      trimLeft: true,
+      trimRight: true,
+      replace: "function",
+    });
+    assert.deepEqual(seen.tag, {
+      name: "echo",
+      args: "hello",
+      raw: "{% echo hello %}",
+      trimLeft: false,
+      trimRight: false,
+      replace: "function",
+      remove: "function",
+    });
+  });
+
+  it("only dispatches wildcard tag hooks for registered Liquid tags", async () => {
+    const rewriter = new LiquidRewriter({
+      autoEscape: false,
+      tags: {
+        known: { name: "known", onEmit() {} },
+      },
+    });
+    const seen = [];
+
+    rewriter.on("{% * %}", {
+      element(tag) {
+        seen.push(tag.name);
+        tag.replace(tag.name);
+      },
+    });
+
+    assert.equal(await rewriter.renderFragment("{% known value %}", {}), "known");
+    assert.equal(await rewriter.renderFragment("{% unknown value %}", {}), "");
+    assert.deepEqual(seen, ["known"]);
+  });
+
+  it("keeps rewriter handlers synchronized after parseAndRender restores state", async () => {
+    const engine = new Liquid();
+
+    await engine.parseAndRender("{{ title }}", { title: "Hello" });
+
+    assert.equal(engine.rewriter.handlers, engine.evaluator.handlers);
+    assert.equal(engine.rewriter.handlers.size, 0);
+  });
+
   it("flushes safe literal text before a later Liquid marker", async () => {
     const engine = new Liquid();
-    const handler = engine.createHandler({
+    const handler = engine.rewriter.createHandler({
       user: { name: "Alice" },
     });
 
@@ -255,7 +387,7 @@ describe("Liquid Streaming State Machine", () => {
 
   it("keeps a dangling brace buffered until the next chunk confirms a marker", async () => {
     const engine = new Liquid();
-    const handler = engine.createHandler({
+    const handler = engine.rewriter.createHandler({
       value: "x",
     });
 
@@ -597,7 +729,7 @@ describe("Liquid Streaming State Machine", () => {
   it("skips attribute parsing work for static attributes", async () => {
     const engine = new Liquid();
     let setCalls = 0;
-    const handler = engine.createHandler({});
+    const handler = engine.rewriter.createHandler({});
 
     await handler.element({
       tagName: "div",
@@ -614,7 +746,7 @@ describe("Liquid Streaming State Machine", () => {
 
   it("does not serialize elements when interpolated attributes can be handled natively", async () => {
     const engine = new Liquid();
-    const handler = engine.createHandler({ page: {}, site: { description: "Site desc" } });
+    const handler = engine.rewriter.createHandler({ page: {}, site: { description: "Site desc" } });
     const attributes = [["content", "{{ page.description | default: site.description }}"]];
     let setValue = "";
     let beforeCalls = 0;
@@ -648,10 +780,10 @@ describe("Liquid Streaming State Machine", () => {
     assert.equal(removedContent, false);
   });
 
-  it("exposes interpolate for direct variable rendering", () => {
+  it("exposes direct interpolation through the rewriter module", () => {
     const engine = new Liquid();
 
-    const html = engine.interpolate("Hello {{ user.name }}!", {
+    const html = interpolate(engine, "Hello {{ user.name }}!", {
       user: { name: "Alice" },
     });
 
@@ -661,7 +793,7 @@ describe("Liquid Streaming State Machine", () => {
   it("supports whitespace control in direct interpolation", () => {
     const engine = new Liquid();
 
-    const html = engine.interpolate("A {{- value -}} B", { value: "x" });
+    const html = interpolate(engine, "A {{- value -}} B", { value: "x" });
 
     assert.equal(html, "AxB");
   });
@@ -669,7 +801,7 @@ describe("Liquid Streaming State Machine", () => {
   it("leaves malformed interpolate tags untouched", () => {
     const engine = new Liquid();
 
-    const html = engine.interpolate("Hello {{ user.name", {
+    const html = interpolate(engine, "Hello {{ user.name", {
       user: { name: "Alice" },
     });
 
@@ -691,11 +823,14 @@ describe("Liquid Streaming State Machine", () => {
   });
 
   it("supports custom tags from constructor options", async () => {
+    let seenTag;
     const engine = new Liquid({
       tags: {
         echo_upper: {
           name: "echo_upper",
-          async onEmit({ expression, resolveExpression }) {
+          async onEmit(tag) {
+            seenTag = tag;
+            const { expression, resolveExpression } = tag;
             return String(await resolveExpression(expression, { applyFilters: false })).toUpperCase();
           },
         },
@@ -705,6 +840,9 @@ describe("Liquid Streaming State Machine", () => {
     const html = await engine.parseAndRender('{% echo_upper "text" %}', {});
 
     assert.equal(html, "TEXT");
+    assert.ok(seenTag instanceof LiquidTag);
+    assert.equal(seenTag.name, "echo_upper");
+    assert.equal(seenTag.args, '"text"');
   });
 
   it("supports custom tags that return explicit html output", async () => {
@@ -835,23 +973,23 @@ describe("Liquid Streaming State Machine", () => {
   it("renders null values as empty strings when resolving output directly", () => {
     const engine = new Liquid();
 
-    assert.equal(engine.renderResolvedValue(null), "");
+    assert.equal(engine.rewriter.renderResolvedValue(null), "");
   });
 
   it("handles direct value resolution edge cases", () => {
     const engine = new Liquid();
 
-    assert.equal(engine.resolveArgument("", {}), "");
-    assert.equal(engine.resolveArgument("user[", { user: { name: "Alice" } }), undefined);
-    assert.equal(engine.resolveArgument("user[name]", { user: { name: "Alice" } }), "Alice");
-    assert.equal(engine.resolveArgument('user["name"]', { user: { name: "Alice" } }), "Alice");
-    assert.equal(engine.resolveArgument("user['name']", { user: { name: "Alice" } }), "Alice");
-    assert.equal(engine.resolveArgument("user.name", { user: null }), undefined);
-    assert.equal(engine.resolveArgument("name.first", { name: "Alice" }), "A");
-    assert.equal(engine.resolveArgument("name.last", { name: "" }), undefined);
-    assert.equal(engine.resolveArgument("items.last", { items: [] }), undefined);
+    assert.equal(engine.evaluator.resolveArgument("", {}), "");
+    assert.equal(engine.evaluator.resolveArgument("user[", { user: { name: "Alice" } }), undefined);
+    assert.equal(engine.evaluator.resolveArgument("user[name]", { user: { name: "Alice" } }), "Alice");
+    assert.equal(engine.evaluator.resolveArgument('user["name"]', { user: { name: "Alice" } }), "Alice");
+    assert.equal(engine.evaluator.resolveArgument("user['name']", { user: { name: "Alice" } }), "Alice");
+    assert.equal(engine.evaluator.resolveArgument("user.name", { user: null }), undefined);
+    assert.equal(engine.evaluator.resolveArgument("name.first", { name: "Alice" }), "A");
+    assert.equal(engine.evaluator.resolveArgument("name.last", { name: "" }), undefined);
+    assert.equal(engine.evaluator.resolveArgument("items.last", { items: [] }), undefined);
     assert.equal(
-      engine.resolveValue('"base" | missing"quoted:arg"', {}),
+      engine.evaluator.resolveValue('"base" | missing"quoted:arg"', {}),
       "base",
     );
   });
@@ -1058,7 +1196,7 @@ describe("Liquid Streaming State Machine", () => {
 
   it("removes skipped elements and their end tags through the element handler", async () => {
     const engine = new Liquid();
-    const handler = engine.createHandler({});
+    const handler = engine.rewriter.createHandler({});
 
     await handler.text({
       text: "{% if false %}",
@@ -1106,7 +1244,7 @@ describe("Liquid Streaming State Machine", () => {
       state: "EMIT",
       textBufferParts: [],
     };
-    const elseOutput = await engine.processEmitText("{% else %}visible", elseHandler);
+    const elseOutput = await processEmitText(engine, "{% else %}visible", elseHandler);
 
     const captureHandler = {
       capture: {
@@ -1124,7 +1262,7 @@ describe("Liquid Streaming State Machine", () => {
       state: "CAPTURE",
       textBufferParts: [],
     };
-    const captureOutput = await engine.processCaptureText("", captureHandler);
+    const captureOutput = await processCaptureText(engine, "", captureHandler);
 
     assert.equal(elseOutput, "visible");
     assert.equal(elseHandler.currentContext, branchContext);
@@ -1133,7 +1271,7 @@ describe("Liquid Streaming State Machine", () => {
 
   it("serializes elements while capture mode is active", async () => {
     const engine = new Liquid();
-    const handler = engine.createHandler({});
+    const handler = engine.rewriter.createHandler({});
 
     await handler.text({
       text: "{% capture ghost %}",
@@ -1178,7 +1316,7 @@ describe("Liquid Streaming State Machine", () => {
 
   it("minimizes falsey attributes while capture mode is active", async () => {
     const engine = new Liquid();
-    const handler = engine.createHandler({});
+    const handler = engine.rewriter.createHandler({});
 
     await handler.text({
       text: "{% capture ghost %}",
@@ -1212,7 +1350,7 @@ describe("Liquid Streaming State Machine", () => {
 
   it("serializes elements without attributes while capture mode is active", async () => {
     const engine = new Liquid();
-    const handler = engine.createHandler({});
+    const handler = engine.rewriter.createHandler({});
 
     await handler.text({
       text: "{% capture ghost %}",
@@ -1257,7 +1395,7 @@ describe("Liquid Streaming State Machine", () => {
       textBufferParts: [],
     };
 
-    const output = await engine.processSkipText("{% else %}{{ marker }}", handler);
+    const output = await processSkipText(engine, "{% else %}{{ marker }}", handler);
 
     assert.equal(output, "branch");
     assert.equal(handler.state, "EMIT");
@@ -1276,7 +1414,7 @@ describe("Liquid Streaming State Machine", () => {
       state: "SKIP",
       textBufferParts: [],
     };
-    const elseOutput = await engine.processSkipText("{%- else -%}{{ marker }}", elseHandler);
+    const elseOutput = await processSkipText(engine, "{%- else -%}{{ marker }}", elseHandler);
 
     const endifHandler = {
       capture: null,
@@ -1287,7 +1425,7 @@ describe("Liquid Streaming State Machine", () => {
       state: "SKIP",
       textBufferParts: [],
     };
-    const endifOutput = await engine.processSkipText("{%- endif -%}{{ marker }}", endifHandler);
+    const endifOutput = await processSkipText(engine, "{%- endif -%}{{ marker }}", endifHandler);
 
     assert.equal(elseOutput, "stay");
     assert.equal(elseHandler.currentContext, currentContext);
@@ -1307,7 +1445,7 @@ describe("Liquid Streaming State Machine", () => {
       textBufferParts: [],
     };
 
-    const endifOutput = await engine.processEmitText("{% endif %}{{ marker }}", handler);
+    const endifOutput = await processEmitText(engine, "{% endif %}{{ marker }}", handler);
     const loopOutput = await engine.parseAndRender(
       "{% for item in map %}{{ item }}{% endfor %}",
       { map: { a: 1 } },
