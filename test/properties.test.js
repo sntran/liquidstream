@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
 import fc from "fast-check";
-import { Liquid, __private__ } from "../src/index.js";
+import { Liquid, __private__ } from "../lib/mod.js";
 
 const { isLiquidTruthy, resolvePathValue, splitTopLevel } = __private__;
 
@@ -26,9 +26,7 @@ function chunkText(handler, text, splitPoints = []) {
         text: parts[index],
         lastInTextNode: index === parts.length - 1,
         replace(value) {
-          if (index === parts.length - 1) {
-            rendered = value;
-          }
+          rendered += value;
         },
       });
     }

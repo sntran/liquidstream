@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
-import { Liquid } from "../src/index.js";
+import { Liquid, UNHANDLED } from "../lib/mod.js";
 
 describe("Liquid Streaming State Machine", () => {
   it("wraps the input in a Response and passes it through HTMLRewriter", async () => {
@@ -30,6 +30,87 @@ describe("Liquid Streaming State Machine", () => {
     assert.equal(await transformInput.text(), "<div>Hello</div>");
     assert.equal(html, "<div>Hello</div>");
     assert.deepEqual(selectors, ["*"]);
+  });
+
+  it("transforms a Response without buffering and preserves response metadata", async () => {
+    const engine = new Liquid();
+    const input = new Response("<p>{{ title }}</p>", {
+      status: 202,
+      statusText: "Accepted",
+      headers: {
+        "content-length": "17",
+        "content-type": "text/html; charset=utf-8",
+        "x-test": "kept",
+      },
+    });
+
+    engine.on("title", {
+      async node() {
+        return "Streamed";
+      },
+    });
+
+    const output = engine.transform(input);
+
+    assert.ok(output instanceof Response);
+    assert.equal(output.status, 202);
+    assert.equal(output.statusText, "Accepted");
+    assert.equal(output.headers.get("content-type"), "text/html; charset=utf-8");
+    assert.equal(output.headers.get("x-test"), "kept");
+    assert.equal(output.headers.has("content-length"), false);
+    assert.equal(await output.text(), "<p>Streamed</p>");
+  });
+
+  it("memoizes registered node() calls per transform and falls back from UNHANDLED get()", async () => {
+    const engine = new Liquid();
+    let calls = 0;
+
+    engine.on("user", {
+      async node() {
+        calls += 1;
+        return {
+          profile: { name: "Ada" },
+          visits: 3,
+        };
+      },
+      async get(parent, token) {
+        if (token === "visits") {
+          return 7;
+        }
+
+        return parent?.[token] ?? UNHANDLED;
+      },
+    });
+
+    const html = await engine.transform(
+      new Response("{{ user.profile.name }} {{ user.visits }} {{ user.profile.name }}"),
+    ).text();
+
+    assert.equal(html, "Ada 7 Ada");
+    assert.equal(calls, 1);
+  });
+
+  it("awaits async filters in text nodes and attributes", async () => {
+    const engine = new Liquid();
+
+    engine.on("page", {
+      async node() {
+        return { title: "liquidstream" };
+      },
+      async filter(value, name) {
+        if (name === "decorate") {
+          return `**${String(value).toUpperCase()}**`;
+        }
+
+        return UNHANDLED;
+      },
+    });
+
+    const html = await engine.transform(
+      new Response('<h1 title="{{ page.title | decorate }}">{{ page.title | decorate }}</h1>'),
+    ).text();
+
+    assert.equal(html, '<h1 title="**LIQUIDSTREAM**">**LIQUIDSTREAM**</h1>');
   });
 
   it("passes plain HTML through unchanged", async () => {
@@ -144,6 +225,73 @@ describe("Liquid Streaming State Machine", () => {
     assert.deepEqual(earlyWrites, [""]);
     assert.equal(rendered, "Alice Hello");
     assert.deepEqual(options, { html: true });
+  });
+
+  it("flushes safe literal text before a later Liquid marker", async () => {
+    const engine = new Liquid();
+    const handler = engine.createHandler({
+      user: { name: "Alice" },
+    });
+
+    const writes = [];
+    await handler.text({
+      text: "Hello {{ user.",
+      lastInTextNode: false,
+      replace(value) {
+        writes.push(value);
+      },
+    });
+
+    await handler.text({
+      text: "name }}",
+      lastInTextNode: true,
+      replace(value) {
+        writes.push(value);
+      },
+    });
+
+    assert.deepEqual(writes, ["Hello", " Alice"]);
+  });
+
+  it("keeps a dangling brace buffered until the next chunk confirms a marker", async () => {
+    const engine = new Liquid();
+    const handler = engine.createHandler({
+      value: "x",
+    });
+
+    const writes = [];
+    await handler.text({
+      text: "Hello {",
+      lastInTextNode: false,
+      replace(value) {
+        writes.push(value);
+      },
+    });
+
+    await handler.text({
+      text: "{ value }}",
+      lastInTextNode: true,
+      replace(value) {
+        writes.push(value);
+      },
+    });
+
+    assert.deepEqual(writes, ["Hello", " x"]);
+  });
+
+  it("propagates rejected context trap promises through transform()", async () => {
+    const engine = new Liquid();
+
+    engine.on("broken", {
+      node() {
+        return Promise.reject(new Error("boom"));
+      },
+    });
+
+    await assert.rejects(
+      () => engine.transform(new Response("{{ broken.value }}")).text(),
+      /boom/,
+    );
   });
 
   it("does not re-evaluate interpolated data as template code", async () => {
@@ -547,8 +695,8 @@ describe("Liquid Streaming State Machine", () => {
       tags: {
         echo_upper: {
           name: "echo_upper",
-          onEmit({ expression, resolveExpression }) {
-            return String(resolveExpression(expression, { applyFilters: false })).toUpperCase();
+          async onEmit({ expression, resolveExpression }) {
+            return String(await resolveExpression(expression, { applyFilters: false })).toUpperCase();
           },
         },
       },
@@ -636,7 +784,7 @@ describe("Liquid Streaming State Machine", () => {
       tags: {
         echo_arg: {
           name: "echo_arg",
-          onEmit({ expression, resolveArgument }) {
+          async onEmit({ expression, resolveArgument }) {
             return resolveArgument(expression);
           },
         },

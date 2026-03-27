@@ -2,13 +2,15 @@
 
 Streaming-first Liquid for Cloudflare Workers, edge runtimes, and Node.js.
 
-`liquidstream` keeps the familiar `new Liquid()` API, but the engine is built around `HTMLRewriter` instead of a full AST compiler. It is designed for projects that want Liquid templates, early HTML streaming, and a runtime model that still feels comfortable in Worker-style environments.
+`liquidstream` is now natively powered by `Response` objects. The primary engine is `transform(input: Response): Response`, which keeps HTML flowing through `HTMLRewriter` without switching back to a buffered string renderer. In Edge and Worker environments, that gives you a zero-buffering path by default: the engine rewrites the upstream response body as it streams, pauses only when it reaches a Liquid marker that needs resolution, and resumes as soon as the value is ready.
+
+The other major shift is the async walker. Instead of requiring the entire context object up front, `liquidstream` can lazy-load root values on demand through `.on(contextProp, handler)`. That makes it natural to fetch data only when a template actually references it, while still preserving Liquid-style filters, tags, and HTML-first rendering.
 
 It is especially well suited to:
 
 - documentation sites and marketing pages that are mostly HTML with targeted Liquid expressions
 - edge-rendered pages where `eval()`-heavy template engines are a poor fit
-- projects that want custom filters and tags without bringing in a large compiler pipeline
+- projects that want zero-buffering output and request-scoped data loading
 - Markdown-to-HTML publishing flows where the final page still needs Liquid-aware layout composition
 
 ## Getting started
@@ -19,7 +21,50 @@ It is especially well suited to:
 npm install @sntran/liquidstream
 ```
 
-### Quick start
+### Streaming Quick Start
+
+Use `transform()` when you already have an HTML `Response` and you want the rewrite to stay inside the streaming pipeline.
+
+{% raw %}
+```js
+import { Liquid } from "@sntran/liquidstream";
+
+export default {
+  async fetch(request, env) {
+    const template = await env.ASSETS.fetch(
+      new Request(new URL("/templates/profile.html", request.url)),
+    );
+
+    const engine = new Liquid()
+      .on("user", {
+        async node() {
+          const id = new URL(request.url).searchParams.get("user") ?? "guest";
+          return await env.USERS.get(id, { type: "json" });
+        },
+      });
+
+    return engine.transform(template);
+  },
+};
+```
+{% endraw %}
+
+If `/templates/profile.html` contains:
+
+{% raw %}
+```html
+<article>
+  <h1>{{ user.name }}</h1>
+  <p>{{ user.bio | capitalize }}</p>
+</article>
+```
+{% endraw %}
+
+the engine resolves `user` lazily the first time the template touches that root, then keeps streaming the rewritten response back to the client.
+
+### Liquid.js Compatibility Adapter
+
+`parseAndRender()` remains fully supported as a Liquid.js compatibility adapter. It is the preferred choice for legacy workflows, unit tests, local scripts, and any environment where a final HTML string is still the most practical return value.
 
 {% raw %}
 ```js
@@ -44,12 +89,14 @@ const html = await engine.parseAndRender(
 ```
 {% endraw %}
 
-The return value is the rendered HTML string. In Worker-style environments, the engine still processes templates through `HTMLRewriter`, so the runtime characteristics remain close to the platform instead of emulating a browser or building a large intermediate AST.
+The adapter uses the same engine semantics as `transform()`, but returns the fully rendered HTML string for compatibility-oriented workflows.
 
 ### Product snapshot
 
-- streaming bridge powered by `HTMLRewriter`
-- focused Liquid subset for docs, landing pages, and content-heavy templates
+- response-native rendering powered by `HTMLRewriter`
+- zero-buffering transform path for Edge and Worker responses
+- async walker with lazy root resolution through `.on()`
+- safe-flush text handling that streams literal content immediately and only pauses at Liquid markers
 - instance-local custom filters and custom tags
 - partials loaded through `fetch` for `render` and `include`
 - plugin-friendly design with optional Jekyll-style helpers
@@ -61,6 +108,7 @@ Most Liquid engines optimize for broad compatibility and full-string rendering. 
 
 - stream HTML as early as possible
 - avoid `eval()` and `new Function()` in isolate runtimes
+- lazy-load template data only when a root is actually referenced
 - stay small enough to inspect and maintain
 - keep the API practical for content sites and edge rendering
 
@@ -73,14 +121,43 @@ If your templates are HTML-first and your runtime is closer to Cloudflare Worker
 In practice, that means:
 
 - HTML is treated as the primary document format
+- `transform()` works on `Response` objects directly instead of rendering through a separate string buffer
 - Liquid expressions are resolved while the markup flows through the rewriter
+- root data can be loaded lazily through `.on(contextProp, handler)`
 - custom filters and tags are registered per engine instance
 - partials are loaded through `fetch`, which maps naturally to Workers and web runtimes
 - cooperative yielding is available for large renders instead of blocking long loops
 
-If you need the broadest possible Liquid compatibility across every legacy construct, another engine may be a better fit. If you want a pragmatic subset that behaves naturally in isolate runtimes, `liquidstream` is designed for that job.
+If you need the broadest possible Liquid compatibility across every legacy construct, another engine may be a better fit. If you want a pragmatic subset that behaves naturally in isolate runtimes and still offers a compatibility adapter for string-based flows, `liquidstream` is designed for that job.
 
 ## Examples
+
+### Response-native transform
+
+{% raw %}
+```js
+import { Liquid } from "@sntran/liquidstream";
+
+const engine = new Liquid()
+  .on("page", {
+    async node() {
+      return {
+        title: "Streaming First",
+        summary: "response-native liquid",
+      };
+    },
+  });
+
+const response = engine.transform(new Response(`
+  <section>
+    <h1>{{ page.title }}</h1>
+    <p>{{ page.summary | capitalize }}</p>
+  </section>
+`));
+```
+{% endraw %}
+
+### Legacy string workflow
 
 {% raw %}
 ```js
@@ -94,6 +171,8 @@ await engine.parseAndRender(
 );
 ```
 {% endraw %}
+
+### Loop rendering
 
 {% raw %}
 ```js
@@ -111,6 +190,8 @@ await engine.parseAndRender(
 );
 ```
 {% endraw %}
+
+### Jekyll-style filters
 
 {% raw %}
 ```js
@@ -142,6 +223,8 @@ const html = await engine.parseAndRender(
 ```
 {% endraw %}
 
+### Capture and control flow
+
 {% raw %}
 ```js
 import { Liquid } from "@sntran/liquidstream";
@@ -170,6 +253,8 @@ const html = await engine.parseAndRender(
 );
 ```
 {% endraw %}
+
+### Partials through `fetch`
 
 {% raw %}
 ```js
@@ -209,6 +294,88 @@ This repository is also the largest working example of `liquidstream` in this co
 - the final page stays small, inlined, and JavaScript-free
 
 That makes the repository useful both as package documentation and as a practical end-to-end reference.
+
+## The Lazy Context Registry
+
+The async walker resolves the first token of a Liquid path through `.on(contextProp, handler)`.
+
+{% raw %}
+```js
+import { Liquid, UNHANDLED } from "@sntran/liquidstream";
+
+const engine = new Liquid()
+  .on("user", {
+    async node() {
+      return {
+        profile: { name: "Ada Lovelace" },
+        visits: 3,
+      };
+    },
+    async get(target, token, ctx) {
+      if (token === "visits" && ctx.root === "user") {
+        return 7;
+      }
+
+      return target?.[token] ?? UNHANDLED;
+    },
+    async filter(target, name, args, ctx) {
+      if (name === "badge") {
+        const prefix = args[0] ?? ctx.root;
+        return `**${prefix}:${String(target).toUpperCase()}**`;
+      }
+
+      return UNHANDLED;
+    },
+  });
+```
+{% endraw %}
+
+TypeScript shape:
+
+```ts
+export type Awaitable<T> = T | Promise<T>;
+export declare const UNHANDLED: unique symbol;
+export type LiquidPathToken = string | number;
+export type TrapResult<T> = T | typeof UNHANDLED;
+
+export interface NodeTrapContext {
+  root: string;
+  input: Response;
+  expression: string;
+  signal: AbortSignal | null;
+}
+
+export interface TrapContext {
+  root: string;
+  input: Response;
+  expression: string;
+  path: readonly LiquidPathToken[];
+  index?: number;
+  signal: AbortSignal | null;
+}
+
+export interface LiquidContextHandler {
+  node?(ctx: NodeTrapContext): Awaitable<TrapResult<unknown>>;
+  get?(target: unknown, token: LiquidPathToken, ctx: TrapContext): Awaitable<TrapResult<unknown>>;
+  filter?(target: unknown, name: string, args: readonly unknown[], ctx: TrapContext): Awaitable<TrapResult<unknown>>;
+}
+```
+
+Trap semantics:
+
+- `node()` resolves the root value for the registered property and is memoized once per `transform()` call
+- `get(target, token, ctx)` resolves one token hop at a time after the root has been loaded
+- `filter(target, name, args, ctx)` intercepts filter application for values originating from that root
+- `ctx` carries the metadata for the current resolution step, including the root name, expression, path, input response, and cancellation signal
+- returning `UNHANDLED` delegates back to the engine
+- `UNHANDLED` is different from `undefined`: `undefined` is treated as a real resolved value, while `UNHANDLED` means “fall back to the default behavior”
+
+Default fallback behavior:
+
+- if no root handler exists, the engine falls back to the active render scope
+- if `get()` returns `UNHANDLED`, normal path traversal continues
+- if `filter()` returns `UNHANDLED`, the global filter registry is checked next
+- if no filter exists at all, the current value is preserved
 
 ## Tags
 
@@ -425,15 +592,49 @@ Supported options:
 
 The constructor is intentionally small. Most customization happens by passing instance-local filters, tags, and fetch behavior instead of relying on globals.
 
+### `on(contextProp, handler)`
+
+Registers a lazy root handler for the async walker.
+
+Use this when you want to resolve a root like `user`, `page`, or `posts` on demand during `transform()`. A root handler can:
+
+- load the root with `node()`
+- override path traversal with `get()`
+- intercept root-local filters with `filter()`
+
+Re-registering the same `contextProp` replaces the previous handler.
+
+### `transform(input)`
+
+Transforms an HTML `Response` without buffering the full body in memory.
+
+This is the primary API for Edge and Worker environments. Pass in an upstream HTML response, let `liquidstream` rewrite it through `HTMLRewriter`, and return the transformed response directly to the client.
+
+Important guarantees:
+
+- the streaming path is response-native
+- `Content-Length` is removed automatically because rewritten output length can change
+- plain text is safe-flushed immediately and the stream only pauses at Liquid markers that need evaluation
+- async `.on()` traps can await I/O without forcing a whole-document buffer
+
 ### `parseAndRender(html, context)`
 
-Renders a template string with the provided context.
+Renders a template string and returns the final HTML string.
 
-Use this for the normal “template plus data in, HTML out” flow. The template should be HTML-first markup, not arbitrary text, because the engine relies on `HTMLRewriter` semantics while processing.
+This method is fully supported as a Liquid.js compatibility adapter. Prefer it for:
+
+- legacy codebases already built around string templates
+- unit tests that assert on final HTML strings
+- local scripts, static generation steps, or non-streaming environments
+- gradual migration to `transform()` without changing every call site at once
+
+Internally, it routes top-level context keys through the same async walker used by `transform()`, so the compatibility path stays behaviorally aligned with the streaming engine.
 
 ### `registerFilter(name, filter)`
 
-Adds or overrides an instance-local filter.
+Adds or overrides an instance-local global filter.
+
+Global filters remain the fallback path after a root-local `filter()` trap returns `UNHANDLED`.
 
 ### `registerTag(name, handler)`
 
@@ -460,6 +661,7 @@ There are a few practical rules worth knowing when you build with `liquidstream`
 - `render` and `include` rely on `fetch`, so relative template loading is part of the engine contract
 - the engine is happiest with HTML documents and HTML fragments rather than plain-text templates
 - custom filters and tags are isolated to the engine instance that registered them
+- lazy roots registered with `.on()` are resolved per transformed response, not globally
 
 Those constraints are deliberate. They keep the engine easier to reason about in environments where streaming and runtime safety matter.
 
@@ -472,7 +674,11 @@ Current benchmark snapshot from this repository:
 - first byte, filter-dependent template, median: `0.216 ms`
 - heavy 1 MB render: `29.485 ms`
 
-These numbers come from [`scripts/benchmark-liquid.mjs`](./scripts/benchmark-liquid.mjs) and are better read as directional guidance than a universal speed claim. `liquidstream` is strongest when streaming behavior and edge compatibility matter more than raw string-at-once throughput.
+These numbers come from [`scripts/benchmark-liquid.mjs`](./scripts/benchmark-liquid.mjs) and are better read as directional guidance than a universal speed claim.
+
+The important architectural update is the safe-flush behavior in the streaming engine: literal text can be emitted immediately, and the rewriter only waits when it reaches a Liquid marker that actually needs a value. On large HTML documents with long static prefixes, that pushes first-byte latency lower than a buffered string render because the engine no longer has to wait for the whole template or the full context to settle before sending useful bytes.
+
+`liquidstream` is strongest when streaming behavior, request-scoped data loading, and edge compatibility matter more than raw string-at-once throughput.
 
 ## Contributing
 

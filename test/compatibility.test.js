@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
 import { Liquid as LiquidJS } from "liquidjs";
-import { Liquid } from "../src/index.js";
+import { Liquid } from "../lib/mod.js";
 
 async function renderBoth(template, context = {}) {
   const workerEngine = new Liquid();

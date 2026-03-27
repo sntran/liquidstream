@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
-import { Liquid } from "../src/index.js";
+import { Liquid } from "../lib/mod.js";
 
 describe("Liquid Standard Filters", () => {
   it('supports the "now" keyword in the date filter', async () => {

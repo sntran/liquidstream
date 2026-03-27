@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { gzipSync } from "node:zlib";
 import { performance } from "node:perf_hooks";
 import { HTMLRewriter } from "@sntran/html-rewriter";
-import { Liquid } from "../src/index.js";
+import { Liquid } from "../lib/mod.js";
 import { Liquid as LiquidJS } from "liquidjs";
 
 const KB = 1024;
@@ -190,7 +190,7 @@ const heavyContext = { items: loopItems };
 const filterFirstByteContext = { item: loopItems[0] };
 
 const bundleSources = await Promise.all([
-  readFile(new URL("../src/index.js", import.meta.url)),
+  readFile(new URL("../lib/mod.js", import.meta.url)),
   readFile(new URL("../node_modules/liquidjs/dist/liquid.browser.mjs", import.meta.url)),
 ]);
 

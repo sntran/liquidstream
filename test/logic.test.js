@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
-import { Liquid } from "../src/index.js";
+import { Liquid } from "../lib/mod.js";
 
 describe("Liquid Logic Parity", () => {
   it("supports case/when/else branches", async () => {
@@ -157,7 +157,7 @@ describe("Liquid Logic Parity", () => {
       raw: null,
       runtime: { counters: Object.create(null) },
     };
-    const skippedElse = engine.processSkipText("{% else %}", skipState);
+    const skippedElse = await engine.processSkipText("{% else %}", skipState);
     const strayWhen = await engine.processEmitText('{% when "x" %}still-here', {
       state: "EMIT",
       currentContext: {},

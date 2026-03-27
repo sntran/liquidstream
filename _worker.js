@@ -155,7 +155,9 @@ export function buildReadmePage(markdown, liquid) {
     return renderReadmePage(markdown);
   }
 
-  return liquid.parseAndRender(markdown, {}).then((liquidProcessed) => renderReadmePage(liquidProcessed));
+  return liquid.transform(new Response(markdown))
+    .text()
+    .then((liquidProcessed) => renderReadmePage(liquidProcessed));
 }
 
 export default {
@@ -176,23 +178,32 @@ export default {
     }).plugin(jekyll);
     const readme = await buildReadmePage(readmeSource, liquid);
 
-    const html = await liquid.parseAndRender(layout, {
-      content: readme.content,
-      page: {
-        title: readme.title,
-        description: readme.description,
-        url: "/",
-      },
-      perf: {
-        render_ms: Date.now() - startedAt,
-        benchmark_label: SITE_DATA.benchmark_label,
-      },
-      site: SITE_DATA,
-    });
+    liquid
+      .on("content", {
+        node: () => readme.content,
+      })
+      .on("page", {
+        node: () => ({
+          title: readme.title,
+          description: readme.description,
+          url: "/",
+        }),
+      })
+      .on("perf", {
+        node: () => ({
+          render_ms: Date.now() - startedAt,
+          benchmark_label: SITE_DATA.benchmark_label,
+        }),
+      })
+      .on("site", {
+        node: () => SITE_DATA,
+      });
 
-    return new Response(html, {
+    const response = liquid.transform(new Response(layout, {
       headers: HTML_HEADERS,
       status: 200,
-    });
+    }));
+
+    return response;
   },
 };

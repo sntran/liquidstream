@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
-import { Liquid } from "../src/index.js";
+import { Liquid } from "../lib/mod.js";
 
 function createMockFetch(entries) {
   return async (input) => {

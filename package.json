@@ -25,7 +25,7 @@
     "start": "npx -y wrangler pages dev .",
     "test": "node scripts/run-tests.mjs",
     "build": "esbuild lib/mod.js --bundle --format=esm --outfile=dist/liquidstream.js --sourcemap --target=es2020 --platform=node && esbuild lib/mod.js --bundle --format=esm --outfile=dist/liquidstream.min.js --sourcemap --minify --target=es2020 --platform=node",
-    "coverage": "c8 --reporter=text --include=src/index.js node scripts/run-tests.mjs",
+    "coverage": "c8 --reporter=text --include=lib/mod.js node scripts/run-tests.mjs",
     "benchmark": "node --expose-gc --experimental-wasm-jspi scripts/benchmark-liquid.mjs"
   },
   "keywords": [

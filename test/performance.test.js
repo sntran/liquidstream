@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
 import { performance } from "node:perf_hooks";
-import { Liquid } from "../src/index.js";
+import { Liquid } from "../lib/mod.js";
 
 describe("Liquid Performance", () => {
   it("renders a simple template in under 2ms on average", async () => {
