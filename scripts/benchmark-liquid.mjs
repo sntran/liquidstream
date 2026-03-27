@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { gzipSync } from "node:zlib";
 import { performance } from "node:perf_hooks";
-import { HTMLRewriter } from "@sntran/html-rewriter";
+import { build } from "esbuild";
 import { Liquid } from "../lib/mod.js";
 import { Liquid as LiquidJS } from "liquidjs";
 
@@ -42,6 +42,19 @@ function summarizeDurations(samples) {
   };
 }
 
+async function measureTransformAverage(engine, template, iterations = 100) {
+  for (let index = 0; index < 20; index += 1) {
+    await engine.transform(new Response(template)).text();
+  }
+
+  const start = performance.now();
+  for (let index = 0; index < iterations; index += 1) {
+    await engine.transform(new Response(template)).text();
+  }
+
+  return Number(((performance.now() - start) / iterations).toFixed(3));
+}
+
 async function measureAverageRender(engine, template, context, iterations = 100) {
   for (let index = 0; index < 20; index += 1) {
     await engine.parseAndRender(template, context);
@@ -55,51 +68,13 @@ async function measureAverageRender(engine, template, context, iterations = 100)
   return Number(((performance.now() - start) / iterations).toFixed(3));
 }
 
-function legacyNeedsElementHandling(template = "") {
-  let inTag = false;
-
-  for (let index = 0; index < template.length; index += 1) {
-    const char = template[index];
-
-    if (char === "<") {
-      inTag = true;
-      continue;
-    }
-
-    if (char === ">") {
-      inTag = false;
-      continue;
-    }
-
-    if (template.startsWith("{%", index)) {
-      return true;
-    }
-
-    if (inTag && template.startsWith("{{", index)) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-async function measureStreamTtfb(engine, template, context, options = {}) {
-  const { iterations = 25, preScan = false } = options;
+async function measureTransformTtfb(engine, template, iterations = 25) {
   const durations = [];
   let firstChunkBytes = 0;
 
   for (let index = 0; index < iterations; index += 1) {
     const start = performance.now();
-
-    if (preScan) {
-      legacyNeedsElementHandling(template);
-    }
-
-    const handler = engine.createHandler(context);
-    const rewriter = new HTMLRewriter()
-      .on("*", { element: handler.element })
-      .onDocument({ text: handler.text });
-    const response = rewriter.transform(new Response(template));
+    const response = engine.transform(new Response(template));
     const reader = response.body.getReader();
     const chunk = await reader.read();
     durations.push(performance.now() - start);
@@ -131,6 +106,24 @@ async function measureStringTtfb(engine, template, context, iterations = 25) {
     firstChunkBytes: output ? 1 : 0,
     ...summarizeDurations(durations),
   };
+}
+
+async function measureTransformText(engine, template) {
+  return engine.transform(new Response(template)).text();
+}
+
+async function bundleSource(entryPoint) {
+  const result = await build({
+    entryPoints: [entryPoint],
+    bundle: true,
+    format: "esm",
+    minify: true,
+    platform: "node",
+    target: "esnext",
+    write: false,
+  });
+
+  return Buffer.from(result.outputFiles[0].contents);
 }
 
 async function measurePeakHeap(label, render) {
@@ -168,9 +161,6 @@ async function measurePeakHeap(label, render) {
   };
 }
 
-const workerEngine = new Liquid();
-const liquidjsEngine = new LiquidJS();
-
 const simpleTemplate = "<div>{{ user.name }}</div>";
 const simpleContext = { user: { name: "Alice" } };
 
@@ -188,17 +178,33 @@ const loopItems = Array.from({ length: 1000 }, (_, index) => ({
 }));
 const heavyContext = { items: loopItems };
 const filterFirstByteContext = { item: loopItems[0] };
-
-const bundleSources = await Promise.all([
+const workerEngine = new Liquid()
+  .on("user", {
+    async node() {
+      return simpleContext.user;
+    },
+  })
+  .on("items", {
+    async node() {
+      return heavyContext.items;
+    },
+  })
+  .on("item", {
+    async node() {
+      return filterFirstByteContext.item;
+    },
+  });
+const liquidjsEngine = new LiquidJS();
+const [workerSource, workerBundle, liquidjsSource] = await Promise.all([
   readFile(new URL("../lib/mod.js", import.meta.url)),
+  bundleSource(new URL("../lib/mod.js", import.meta.url).pathname),
   readFile(new URL("../node_modules/liquidjs/dist/liquid.browser.mjs", import.meta.url)),
 ]);
 
-const [workerSource, liquidjsSource] = bundleSources;
-
 const report = {
   bundleSize: {
-    workerLiquidGzipBytes: gzipSize(workerSource),
+    workerLiquidEntryGzipBytes: gzipSize(workerSource),
+    workerLiquidBundleGzipBytes: gzipSize(workerBundle),
     liquidjsBrowserGzipBytes: gzipSize(liquidjsSource),
   },
   isolateSafety: {
@@ -207,20 +213,17 @@ const report = {
   },
   timings: {
     simpleTemplateBytes: Buffer.byteLength(simpleTemplate),
-    simpleAverageMs: {
-      workerLiquid: await measureAverageRender(workerEngine, simpleTemplate, simpleContext),
+    transformAverageMs: {
+      workerLiquid: await measureTransformAverage(workerEngine, simpleTemplate),
       liquidjs: await measureAverageRender(liquidjsEngine, simpleTemplate, simpleContext),
     },
     firstByte: {
       staticPrefix: {
-        workerLiquid: await measureStreamTtfb(workerEngine, ttfbTemplate, heavyContext),
-        workerLiquidWithPreScan: await measureStreamTtfb(workerEngine, ttfbTemplate, heavyContext, {
-          preScan: true,
-        }),
+        workerLiquid: await measureTransformTtfb(workerEngine, ttfbTemplate),
         liquidjs: await measureStringTtfb(liquidjsEngine, ttfbTemplate, heavyContext),
       },
       filterDependent: {
-        workerLiquid: await measureStreamTtfb(workerEngine, filterFirstByteTemplate, filterFirstByteContext),
+        workerLiquid: await measureTransformTtfb(workerEngine, filterFirstByteTemplate),
         liquidjs: await measureStringTtfb(liquidjsEngine, filterFirstByteTemplate, filterFirstByteContext),
       },
     },
@@ -228,9 +231,7 @@ const report = {
   memory: {
     templateBytes: Buffer.byteLength(ttfbTemplate),
     itemCount: loopItems.length,
-    workerLiquid: await measurePeakHeap("workerLiquid", () =>
-      workerEngine.parseAndRender(ttfbTemplate, heavyContext),
-    ),
+    workerLiquid: await measurePeakHeap("workerLiquid", () => measureTransformText(workerEngine, ttfbTemplate)),
     liquidjs: await measurePeakHeap("liquidjs", () =>
       liquidjsEngine.parseAndRender(ttfbTemplate, heavyContext),
     ),

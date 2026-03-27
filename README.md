@@ -669,14 +669,16 @@ Those constraints are deliberate. They keep the engine easier to reason about in
 
 Current benchmark snapshot from this repository:
 
-- gzipped engine size: `7931 B`
-- first byte, static-prefix template, median: `2.033 ms`
-- first byte, filter-dependent template, median: `0.216 ms`
-- heavy 1 MB render: `29.485 ms`
+- gzipped ESM entry: `8877 B`
+- gzipped minified bundle: `14973 B`
+- simple `transform()` average, 26 B template: `1.115 ms`
+- first byte, static-prefix template, median: `2.862 ms`
+- first byte, filter-dependent template, median: `0.289 ms`
+- heavy 1 MB `transform()`: `45.405 ms`
 
 These numbers come from [`scripts/benchmark-liquid.mjs`](./scripts/benchmark-liquid.mjs) and are better read as directional guidance than a universal speed claim.
 
-The important architectural update is the safe-flush behavior in the streaming engine: literal text can be emitted immediately, and the rewriter only waits when it reaches a Liquid marker that actually needs a value. On large HTML documents with long static prefixes, that pushes first-byte latency lower than a buffered string render because the engine no longer has to wait for the whole template or the full context to settle before sending useful bytes.
+The benchmark now measures the public `transform()` API directly. The important architectural behavior is still the safe-flush path in the streaming engine: literal text can be emitted immediately, and the rewriter only waits when it reaches a Liquid marker that actually needs a value. On large HTML documents with long static prefixes, that keeps first-byte latency dramatically lower than a buffered string render because the engine can ship the opening bytes before the full document has been resolved.
 
 `liquidstream` is strongest when streaming behavior, request-scoped data loading, and edge compatibility matter more than raw string-at-once throughput.
 
